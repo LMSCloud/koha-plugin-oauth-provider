@@ -55,6 +55,7 @@
         claim_label_categorycode          = "Benutzertyp (Kuerzel)",
         claim_label_category_description  = "Benutzertyp (Bezeichnung)",
         claim_label_dateexpiry             = "Ablaufdatum des Kontos",
+        claim_label_age                    = "Alter",
 
         tool_title              = "OAuth2 Identity Provider: Werkzeuge",
         tool_heading             = "OAuth2 Identity Provider &ndash; Werkzeuge",

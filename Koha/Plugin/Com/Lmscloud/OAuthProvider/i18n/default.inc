@@ -51,6 +51,7 @@
         claim_label_categorycode          = "Patron category (code)",
         claim_label_category_description  = "Patron category (description)",
         claim_label_dateexpiry             = "Account expiry date",
+        claim_label_age                    = "Age",
 
         tool_title              = "OAuth2 Identity Provider: Tools",
         tool_heading             = "OAuth2 Identity Provider &ndash; Tools",

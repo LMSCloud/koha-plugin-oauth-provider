@@ -92,10 +92,13 @@ they handle their own authentication.
 
 Hard-coded in the plugin (`ClaimsCatalog.pm`), toggled per client via checkboxes in the
 admin UI: `cardnumber`, `borrowernumber`, `firstname`, `surname`, `email`, `branchcode`,
-`branchname`, `categorycode`, `category_description`, `dateexpiry`. `userid` is not a
-catalog entry and is **always** released, as is `sub` (the immutable `borrowernumber`, as
-a string - in case staff ever rename a `userid`, and because OIDC requires a stable `sub`
-claim).
+`branchname`, `categorycode`, `category_description`, `dateexpiry`, `age`. `userid` is not
+a catalog entry and is **always** released, as is `sub` (the immutable `borrowernumber`,
+as a string - in case staff ever rename a `userid`, and because OIDC requires a stable
+`sub` claim).
+
+`age` is computed via `Koha::Patron::get_age` (years as of today, derived from
+`dateofbirth`) and is released as `null` if the patron has no date of birth on file.
 
 ## 4. Why standalone templates instead of Koha chrome
 

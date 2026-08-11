@@ -22,6 +22,7 @@ our @CATALOG = (
     { key => 'categorycode' },
     { key => 'category_description' },
     { key => 'dateexpiry' },
+    { key => 'age' },
 );
 
 my %ACCESSOR_OF = (
@@ -35,6 +36,9 @@ my %ACCESSOR_OF = (
     categorycode         => sub { $_[0]->categorycode },
     category_description => sub { $_[0]->category ? $_[0]->category->description : undef },
     dateexpiry           => sub { $_[0]->dateexpiry },
+    # Koha::Patron::get_age() returns years as of today, computed from
+    # dateofbirth; undef if no dateofbirth is on file.
+    age                   => sub { $_[0]->get_age },
 );
 
 sub is_valid_key {
