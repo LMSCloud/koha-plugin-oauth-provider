@@ -64,6 +64,7 @@
               <th>[% T.cfg_th_client_id %]</th>
               <th>[% T.cfg_th_redirect_uris %]</th>
               <th>[% T.cfg_th_claims %]</th>
+              <th>[% T.cfg_th_categories %]</th>
               <th>[% T.cfg_th_status %]</th>
               <th>[% T.cfg_th_actions %]</th>
             </tr>
@@ -83,6 +84,14 @@
                     <em>[% T.cfg_only_userid %]</em>
                   [% ELSE %]
                     [% client.allowed_claims.join(', ') | html %]
+                  [% END %]
+                </td>
+                <td>
+                  [% IF client.allowed_categories.size == 0 && client.denied_categories.size == 0 %]
+                    <em>[% T.cfg_no_category_restriction %]</em>
+                  [% ELSE %]
+                    [% IF client.allowed_categories.size %]<div>[% T.cfg_allowed_categories_label %] [% client.allowed_categories.join(', ') | html %]</div>[% END %]
+                    [% IF client.denied_categories.size %]<div>[% T.cfg_denied_categories_label %] [% client.denied_categories.join(', ') | html %]</div>[% END %]
                   [% END %]
                 </td>
                 <td>[% IF client.is_active %][% T.cfg_status_active %][% ELSE %]<em>[% T.cfg_status_inactive %]</em>[% END %]</td>
@@ -135,6 +144,28 @@
                 [% END %]
               </li>
               <li>
+                <label>[% T.cfg_allowed_categories_label %]</label>
+                <div class="hint">[% T.cfg_allowed_categories_hint %]</div>
+                [% FOREACH cat IN patron_categories %]
+                  <label style="display:block;font-weight:normal">
+                    <input type="checkbox" name="allowed_categories" value="[% cat.categorycode | html %]"
+                      [% IF edit_client.allowed_categories.grep('^' _ cat.categorycode _ '$').size %]checked[% END %]>
+                    [% cat.description | html %] ([% cat.categorycode | html %])
+                  </label>
+                [% END %]
+              </li>
+              <li>
+                <label>[% T.cfg_denied_categories_label %]</label>
+                <div class="hint">[% T.cfg_denied_categories_hint %]</div>
+                [% FOREACH cat IN patron_categories %]
+                  <label style="display:block;font-weight:normal">
+                    <input type="checkbox" name="denied_categories" value="[% cat.categorycode | html %]"
+                      [% IF edit_client.denied_categories.grep('^' _ cat.categorycode _ '$').size %]checked[% END %]>
+                    [% cat.description | html %] ([% cat.categorycode | html %])
+                  </label>
+                [% END %]
+              </li>
+              <li>
                 <label style="display:block;font-weight:normal">
                   <input type="checkbox" name="is_active" value="1" [% IF edit_client.is_active %]checked[% END %]>
                   [% T.cfg_active_label %]
@@ -168,6 +199,26 @@
                   <label style="display:block;font-weight:normal">
                     <input type="checkbox" name="allowed_claims" value="[% claim.key %]">
                     [% T.$label_key %]
+                  </label>
+                [% END %]
+              </li>
+              <li>
+                <label>[% T.cfg_allowed_categories_label %]</label>
+                <div class="hint">[% T.cfg_allowed_categories_hint %]</div>
+                [% FOREACH cat IN patron_categories %]
+                  <label style="display:block;font-weight:normal">
+                    <input type="checkbox" name="allowed_categories" value="[% cat.categorycode | html %]">
+                    [% cat.description | html %] ([% cat.categorycode | html %])
+                  </label>
+                [% END %]
+              </li>
+              <li>
+                <label>[% T.cfg_denied_categories_label %]</label>
+                <div class="hint">[% T.cfg_denied_categories_hint %]</div>
+                [% FOREACH cat IN patron_categories %]
+                  <label style="display:block;font-weight:normal">
+                    <input type="checkbox" name="denied_categories" value="[% cat.categorycode | html %]">
+                    [% cat.description | html %] ([% cat.categorycode | html %])
                   </label>
                 [% END %]
               </li>

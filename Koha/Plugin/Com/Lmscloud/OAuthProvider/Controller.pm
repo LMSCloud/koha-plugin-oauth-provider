@@ -128,6 +128,15 @@ sub _handle_login {
         return _render_login( $c, $plugin, { %$authz_ctx, error => 'invalid_credentials' } );
     }
 
+    # Per-client patron-category allow-list/deny-list, checked only now that
+    # we actually know who logged in - redirect_uri is already trusted at
+    # this point, so a rejection is reported back to the client the same way
+    # a denied consent is (error=access_denied), not as a standalone error
+    # page. This patron simply never gets a code/token for this client.
+    unless ( $plugin->is_client_allowed_for_patron( $client, $patron ) ) {
+        return _redirect_with_error( $c, $redirect_uri, 'access_denied', $authz_ctx->{state} );
+    }
+
     my $ticket = $plugin->create_login_ticket(
         {   borrowernumber => $patron->borrowernumber,
             %$authz_ctx,

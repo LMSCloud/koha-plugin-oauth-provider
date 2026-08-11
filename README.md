@@ -68,7 +68,7 @@ sequenceDiagram
 See the comments in `Controller.pm` for details. Short version:
 
 1. **`GET /authorize`** validates `client_id`/`redirect_uri` and shows a self-contained
-   login form (no Koha chrome - see section 4). `scope` and `nonce` (if supplied by the
+   login form (no Koha chrome - see section 5). `scope` and `nonce` (if supplied by the
    client) are carried through all the way to the finished authorization code.
 2. **`POST /authorize`** (stage `login`) checks the credentials via
    `C4::Auth::checkpw_internal` (allows login by either `userid` or `cardnumber`; Koha's
@@ -92,15 +92,152 @@ they handle their own authentication.
 
 Hard-coded in the plugin (`ClaimsCatalog.pm`), toggled per client via checkboxes in the
 admin UI: `cardnumber`, `borrowernumber`, `firstname`, `surname`, `email`, `branchcode`,
-`branchname`, `categorycode`, `category_description`, `dateexpiry`, `age`. `userid` is not
-a catalog entry and is **always** released, as is `sub` (the immutable `borrowernumber`,
-as a string - in case staff ever rename a `userid`, and because OIDC requires a stable
-`sub` claim).
+`branchname`, `categorycode`, `category_description`, `dateexpiry`, `age`, `address`,
+`email_verified`, `phone_number`, `phone_number_verified`, `fsk`, `status`. `userid` is
+not a catalog entry and is **always** released, as is `sub` (the immutable
+`borrowernumber`, as a string - in case staff ever rename a `userid`, and because OIDC
+requires a stable `sub` claim).
 
 `age` is computed via `Koha::Patron::get_age` (years as of today, derived from
 `dateofbirth`) and is released as `null` if the patron has no date of birth on file.
 
-## 4. Why standalone templates instead of Koha chrome
+### `address` (OIDC Core "address" Claim)
+
+Structured exactly per [OIDC Core 5.1.1](https://openid.net/specs/openid-connect-core-1_0.html#AddressClaim)
+rather than as flat top-level fields, so OIDC-aware clients that already know how to read
+a standard `address` claim need no special-casing for this plugin:
+
+```json
+"address": {
+  "street_address": "Musterstrasse 1\nHinterhaus",
+  "locality": "Musterstadt",
+  "region": "NRW",
+  "postal_code": "12345",
+  "country": "Germany",
+  "formatted": "Musterstrasse 1\nHinterhaus\n12345 Musterstadt\nGermany"
+}
+```
+
+Mapped from Koha's **base/home** address fields only (`address`, `address2` &rarr;
+`street_address`, newline-joined; `city` &rarr; `locality`; `state` &rarr; `region`;
+`zipcode` &rarr; `postal_code`; `country` &rarr; `country`) - deliberately not the
+alternate/"B_" address Koha also has, since OIDC's `address` claim models a single
+address, not two. Every member is omitted individually when empty (all members are
+optional per spec); if the patron has no address information at all, the whole `address`
+claim is `null` rather than an empty object. `scopes_supported` in the discovery document
+(section 7) lists `address` alongside `openid`/`profile` for OIDC client libraries that
+inspect it, but that's informational only, like the other two: what's actually released
+is governed purely by this per-client admin checkbox, same as every other claim in this
+plugin - the `scope` a client requests at `/authorize` is otherwise unused for claim
+selection (it's only inspected for the literal value `openid`, to decide whether to also
+issue a signed `id_token` - see section 7).
+
+### `email_verified`, `phone_number`, `phone_number_verified` (OIDC "email"/"phone" scopes)
+
+`email` (already covered above) plus these three complete OIDC Core's `email` and
+`phone` scope claim sets. `phone_number` maps to Koha's primary phone field
+(`Koha::Patron::phone` - **not** `mobile` or `phonepro`; swap the accessor in
+`ClaimsCatalog.pm` if a client actually needs the mobile number instead).
+
+`email_verified`/`phone_number_verified` are **hardcoded to the JSON boolean `false`**
+(via `Mojo::JSON`'s `false`, so they encode as a real JSON boolean, not the number `0`
+or the string `"false"`) - Koha has no email/phone verification mechanism at all (no
+"verified" column anywhere on the borrowers table), so `false` is simply the honest,
+spec-compliant answer for a system that never verifies either. `scopes_supported` in the
+discovery document (section 7) lists `email`/`phone` alongside the others for the same
+informational-only reason described above for `address`.
+
+### `fsk` and `status` (LMSCloud "Onleihe"/divibib patron status - reimplemented, no fork dependency)
+
+These two mirror what `opac/opac-divibib-auth.pl` returns to the German library
+e-lending service **divibib "Onleihe"**, in installs of the LMSCloud Koha fork that use
+it. That script computes its response via `C4::External::DivibibPatronStatus`, a module
+that only exists in the LMSCloud fork - it is **not** part of community Koha. Since this
+plugin is meant to install on any Koha, its logic is reimplemented from scratch in
+`ClaimsCatalog.pm` (`_patron_status`), using only `Koha::Patron`'s public API and system
+preferences that ship with core Koha (`OverduesBlockCirc`, `noissuescharge`). Both are
+released as JSON numbers.
+
+`fsk` is a German age-rating tier, derived from `Koha::Patron::get_age`:
+
+| age range     | `fsk` |
+|----------------|-------|
+| 0 &ndash; 5    | `0`   |
+| 6 &ndash; 11   | `6`   |
+| 12 &ndash; 15  | `12`  |
+| 16 &ndash; 17  | `16`  |
+| 18+ or unknown | `18`  |
+
+`status` tells the client whether - and why not - the patron may currently borrow
+digital media. The checks run **in this exact order** and stop at the first match
+(kept in sync by hand with `C4/External/DivibibPatronStatus.pm` in the LMSCloud fork):
+
+| order | condition                                                          | `status` |
+|-------|---------------------------------------------------------------------|----------|
+| 1     | has overdues and `OverduesBlockCirc` is `block` or `confirmation`    | `1`      |
+| 2     | debarred/restricted (`is_debarred`)                                  | `1`      |
+| 3     | account expired (`is_expired`)                                       | `-3`     |
+| 4     | no valid address on file (`gonenoaddress`)                            | `1`      |
+| 5     | card marked lost (`lost`)                                              | `1`      |
+| 6     | outstanding fines exceed the `noissuescharge` threshold                 | `4`      |
+| 7     | account locked (too many failed login attempts, `account_locked`)       | `1`      |
+| -     | none of the above apply                                                   | `3`      |
+
+The codes `-2` (wrong password), `-1` (wrong credentials) and `0`/`2` (deleted/test
+account) that `opac-divibib-auth.pl`'s own POD documents are **not reachable** here at
+all: in the original module they only ever come from its constructor re-validating a
+submitted plaintext password, a step this plugin has no reason to replicate - a patron
+only ever reaches `/userinfo` after already passing `checkpw_internal` earlier in the
+OAuth flow, so a credential-related status here would be meaningless. This plugin never
+has that plaintext password available at `/userinfo` time in any case (only momentarily
+during the earlier `/authorize` login step, and never persisted).
+
+The original module's `-4` ("patron category blocked", driven by the global
+`DivibibAuthDisabledForGroups` system preference) is **also not reachable** here, for a
+different reason: that check has been replaced entirely by a per-client access-control
+gate at `/authorize` rather than an informational claim value - see section 4. A patron
+whose category isn't eligible for a given client never gets an `access_token` for it in
+the first place, so there is nothing left for `status` to report in that case.
+
+`fsk`/`status` are computed via one shared internal call regardless of whether one or
+both are requested for a given client, since the underlying checks involve several DB
+lookups (account charges, overdues, debarred/expired) that would otherwise run twice for
+no reason.
+
+## 4. Per-client patron category access control
+
+Replaces what used to be a single, instance-wide `DivibibAuthDisabledForGroups` system
+preference (LMSCloud-fork-only) with a per-client, admin-configurable pair of patron
+category lists, set per application under *Plugins &rarr; OAuth2 / OpenID Connect
+Identity Provider &rarr; Configure*:
+
+- **Allowed patron categories** (optional): if any are checked, only patrons in one of
+  these categories can successfully log in for *that* client. Leaving all unchecked
+  means every category is accepted (the default - matches how every other
+  claim-selection list in this plugin defaults to "nothing extra configured" rather than
+  "nothing allowed").
+- **Denied patron categories** (optional): patrons in a checked category are always
+  rejected for that client, even if their category is also checked in the allow-list
+  above (deny wins on overlap, so admins can carve out an exception from an otherwise
+  broad allow-list).
+
+Unlike the claims in section 3, this is a **hard gate on the login itself**, checked in
+`Controller::_handle_login` right after `checkpw_internal` succeeds (i.e. once the
+patron's identity - and therefore their category - is actually known) and before a
+consent screen or authorization code is ever produced. A rejected patron is redirected
+straight back to the client's `redirect_uri` with `error=access_denied&state=...` - the
+same outcome as a patron clicking "Deny" on the consent screen - rather than shown a
+Koha-branded error page, since `redirect_uri` is already trusted by that point in the
+flow (see the redirect-vs-error-page reasoning in section 10). External applications that
+already handle a user declining consent therefore need no special-casing to also handle
+a category-based rejection.
+
+`OAuthProvider::is_client_allowed_for_patron($client, $patron)` implements the check
+against the client's `allowed_categories`/`denied_categories` (both JSON arrays of
+category codes, sanitized against `Koha::Patron::Categories` on save so a hand-crafted
+POST can't smuggle in a nonexistent code).
+
+## 5. Why standalone templates instead of Koha chrome
 
 `Koha::Plugins::Base::get_template()` is hardcoded to `type => "intranet"` and there is no
 OPAC-side plugin runner. `login.tt`/`consent.tt`/`error.tt` (under `templates/`) are
@@ -110,7 +247,7 @@ chrome (mirroring the sibling plugin
 by contrast, are regular intranet pages (`get_template()`, requiring staff login + the
 `plugins` permission).
 
-## 5. Bilingual UI (English/German)
+## 6. Bilingual UI (English/German)
 
 `configure.tt`, `tool.tt`, `login.tt`, `consent.tt` and `error.tt` render in English or
 German depending on Koha's configured interface language, with the strings being
@@ -164,7 +301,7 @@ in Koha core for valid codes, e.g. `fr-FR`) with the same keys as `default.inc`,
 sure that language is enabled in the `OPACLanguages`/`language` system preferences -
 nothing else needs to change.
 
-## 6. Full OpenID Connect
+## 7. Full OpenID Connect
 
 Beyond plain OAuth2 (sections 1-4), the plugin supports OpenID Connect when the client
 includes `scope=openid` when calling `/authorize`:
@@ -217,7 +354,7 @@ plugin's own discovery URL
 (`.../api/v1/contrib/oauthprovider/.well-known/openid-configuration`) instead of relying
 on pure issuer auto-discovery, which most OIDC client libraries offer as an option.
 
-## 7. Installation
+## 8. Installation
 
 1. Package this repository as a `.kpz`:
    ```bash
@@ -227,19 +364,23 @@ on pure issuer auto-discovery, which most OIDC client libraries offer as an opti
    plugin* (`enable_plugins` must be enabled in `koha-conf.xml`).
 3. Under *Plugins &rarr; OAuth2 / OpenID Connect Identity Provider &rarr; Configure*, set
    the "Public base URL of this plugin" (only required for OIDC/`scope=openid`, see
-   section 5) and register an application. The client ID and client secret are shown -
-   the secret **only once**, after that only its hash exists in the database.
+   section 7) and register an application: name, redirect URIs, which claims it may
+   receive (section 3), and optionally which patron categories may/may not authenticate
+   for it at all (section 4). The client ID and client secret are shown - the secret
+   **only once**, after that only its hash exists in the database.
 4. For a real `/.well-known/openid-configuration` at the domain root: set up the
-   webserver rewrite from section 5 (optional, not part of the plugin).
+   webserver rewrite from section 7 (optional, not part of the plugin).
 
 Because Koha plugins cannot declare their own CPAN dependencies (plugin code only runs
 with modules already present on the server, see `Koha/Plugins.pm`/
 `Koha/Plugins/Handler.pm`), this plugin uses exclusively modules already present in
 Koha's `cpanfile` (`Mojo::JWT`, `UUID`, `Digest::SHA`, `MIME::Base64`, `Koha::AuthUtils`,
-`Koha::Token`) - no extra installation needed, not even for OIDC (HS256 instead of RS256,
-see section 1).
+`Koha::Token`) - no extra installation needed, not even for OIDC (HS256 instead of
+RS256, see section 1) or for the `fsk`/`status` claims (deliberately reimplemented
+instead of depending on the LMSCloud-fork-only `C4::External::DivibibPatronStatus` - see
+section 3).
 
-## 8. Example: token and userinfo calls
+## 9. Example: token and userinfo calls
 
 ```bash
 # Step 4: exchange the code for a token (assuming scope=openid at step 1)
@@ -256,11 +397,11 @@ curl https://opac.example.org/api/v1/contrib/oauthprovider/userinfo \
   -H "Authorization: Bearer <access_token>"
 # -> {"userid":"jdoe","sub":"42"}
 
-# Discovery document (plugin's own URL, see section 5 for the webserver rewrite)
+# Discovery document (plugin's own URL, see section 7 for the webserver rewrite)
 curl https://opac.example.org/api/v1/contrib/oauthprovider/.well-known/openid-configuration
 ```
 
-## 9. Security
+## 10. Security
 
 - `client_secret` is never stored in plaintext (bcrypt via
   `Koha::AuthUtils::hash_password`, same pattern as `Koha::ApiKey`).
@@ -284,14 +425,14 @@ curl https://opac.example.org/api/v1/contrib/oauthprovider/.well-known/openid-co
   with at `/token`, in plaintext, as the key - it is not stored anywhere additionally for
   this purpose, only used in memory at the moment the token is issued.
 
-## 10. What was NOT tested
+## 11. What was NOT tested
 
 As with the sibling plugin `koha-plugin-eid-verification`, no running Koha instance with
 a database was available for this session. In particular, untested:
 
 - The complete end-to-end flow (login &rarr; consent &rarr; token &rarr; userinfo/id_token)
   against a real Koha installation, including the `upgrade()` migration from version
-  1.0.0 to 1.1.0 (`ALTER TABLE ... ADD COLUMN IF NOT EXISTS`).
+  1.0.0 through 1.2.0 (`ALTER TABLE ... ADD COLUMN IF NOT EXISTS`).
 - The exact return behavior of `C4::Auth::checkpw_internal` in edge cases (e.g. expired
   password, locked account) - the code assumes the confirmed normal case
   `(1, $cardnumber, $userid, $patron)` or `0` (see `C4/Auth.pm:2072-2101` in the LMSCloud
@@ -303,9 +444,19 @@ a database was available for this session. In particular, untested:
 - Interoperability with concrete OIDC client libraries (e.g. whether they accept
   HS256 id_tokens without RS256/JWKS, and whether they offer a custom discovery URL
   instead of pure issuer auto-discovery), as well as the webserver rewrite itself
-  (the nginx/Apache examples in section 5 are untested templates).
+  (the nginx/Apache examples in section 7 are untested templates).
+- The `fsk`/`status` claims' reimplemented logic (`_patron_status` in `ClaimsCatalog.pm`)
+  against real patron/fines/overdues data - only exercised with substituted fake
+  `Koha::Patron` objects here, since real ones need a live database. In particular, no
+  side-by-side comparison against the LMSCloud fork's actual
+  `C4::External::DivibibPatronStatus` output was possible in this session; the two
+  should be diffed against each other on a real LMSCloud instance before relying on this
+  reimplementation to match it exactly.
+- The per-client category access-control gate (`is_client_allowed_for_patron`, section
+  4) against a real patron/category database and a real consent/redirect round-trip -
+  only exercised with fake `Koha::Patron`/client hashrefs here.
 
-## 11. File overview
+## 12. File overview
 
 ```
 Koha/Plugin/Com/Lmscloud/

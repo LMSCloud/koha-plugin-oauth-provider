@@ -36,6 +36,7 @@ use URI::Escape qw(uri_escape);
 use UUID;
 
 use Koha::AuthUtils;
+use Koha::Patron::Categories;
 use Koha::Token;
 use Koha::Plugin::Com::Lmscloud::OAuthProvider::ClaimsCatalog;
 
@@ -51,7 +52,7 @@ sub _random_token {
     return Koha::Token->new->generate( { pattern => sprintf( $SAFE_TOKEN_PATTERN, $length ) } );
 }
 
-our $VERSION = '1.1.0';
+our $VERSION = '1.2.0';
 
 our $metadata = {
     name            => 'OAuth2 / OpenID Connect Identity Provider',
@@ -132,6 +133,8 @@ sub install {
             client_name         VARCHAR(255) NOT NULL,
             redirect_uris       TEXT NOT NULL,
             allowed_claims      TEXT NOT NULL,
+            allowed_categories  TEXT NULL,
+            denied_categories   TEXT NULL,
             is_active           TINYINT(1) NOT NULL DEFAULT 1,
             created_on          DATETIME NOT NULL,
             updated_on          DATETIME NOT NULL,
@@ -201,11 +204,17 @@ sub upgrade {
     # 1.1.0: added OIDC support (nonce/scope tracking for id_token issuance).
     # ADD COLUMN IF NOT EXISTS has been supported since MariaDB 10.0.2, long
     # before any MariaDB version Koha 22.11 runs on.
-    my $codes_table  = $self->_codes_table;
-    my $tokens_table = $self->_tokens_table;
+    my $clients_table = $self->_clients_table;
+    my $codes_table   = $self->_codes_table;
+    my $tokens_table  = $self->_tokens_table;
     $dbh->do("ALTER TABLE $codes_table ADD COLUMN IF NOT EXISTS nonce VARCHAR(255) NULL");
     $dbh->do("ALTER TABLE $codes_table ADD COLUMN IF NOT EXISTS scope VARCHAR(255) NULL");
     $dbh->do("ALTER TABLE $tokens_table ADD COLUMN IF NOT EXISTS scope VARCHAR(255) NULL");
+
+    # 1.2.0: per-client patron-category allow-list/deny-list, replacing the
+    # old global DivibibAuthDisabledForGroups-based restriction.
+    $dbh->do("ALTER TABLE $clients_table ADD COLUMN IF NOT EXISTS allowed_categories TEXT NULL");
+    $dbh->do("ALTER TABLE $clients_table ADD COLUMN IF NOT EXISTS denied_categories TEXT NULL");
 
     return 1;
 }
@@ -264,10 +273,7 @@ sub list_clients {
         "SELECT * FROM $table ORDER BY id",
         { Slice => {} }
     );
-    for my $row (@$rows) {
-        $row->{redirect_uris}  = decode_json( $row->{redirect_uris} );
-        $row->{allowed_claims} = decode_json( $row->{allowed_claims} );
-    }
+    $self->_decode_client_json($_) for @$rows;
     return $rows;
 }
 
@@ -280,8 +286,7 @@ sub get_client {
         undef, $client_id
     );
     return unless $row;
-    $row->{redirect_uris}  = decode_json( $row->{redirect_uris} );
-    $row->{allowed_claims} = decode_json( $row->{allowed_claims} );
+    $self->_decode_client_json($row);
     return $row;
 }
 
@@ -294,8 +299,20 @@ sub get_client_by_row_id {
         undef, $id
     );
     return unless $row;
-    $row->{redirect_uris}  = decode_json( $row->{redirect_uris} );
-    $row->{allowed_claims} = decode_json( $row->{allowed_claims} );
+    $self->_decode_client_json($row);
+    return $row;
+}
+
+# Decodes a client row's JSON-array columns in place. allowed_categories/
+# denied_categories are TEXT NULL (added in 1.2.0) - rows created before
+# that migration, or never edited since, may have NULL there, so this
+# defaults a missing/empty value to [] rather than choking on decode_json(undef).
+sub _decode_client_json {
+    my ( $self, $row ) = @_;
+    $row->{redirect_uris}      = decode_json( $row->{redirect_uris} );
+    $row->{allowed_claims}     = decode_json( $row->{allowed_claims} );
+    $row->{allowed_categories} = $row->{allowed_categories} ? decode_json( $row->{allowed_categories} ) : [];
+    $row->{denied_categories}  = $row->{denied_categories}  ? decode_json( $row->{denied_categories} )  : [];
     return $row;
 }
 
@@ -311,14 +328,16 @@ sub create_client {
     my $table = $self->_clients_table;
     $dbh->do(
         "INSERT INTO $table
-            (client_id, client_secret_hash, client_name, redirect_uris, allowed_claims, is_active, created_on, updated_on)
-         VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())",
+            (client_id, client_secret_hash, client_name, redirect_uris, allowed_claims, allowed_categories, denied_categories, is_active, created_on, updated_on)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())",
         undef,
         $client_id,
         $secret_hash,
         $args->{client_name},
         encode_json( $args->{redirect_uris}  || [] ),
         encode_json( $self->_sanitize_claims( $args->{allowed_claims} ) ),
+        encode_json( $self->_sanitize_categories( $args->{allowed_categories} ) ),
+        encode_json( $self->_sanitize_categories( $args->{denied_categories} ) ),
         $args->{is_active} ? 1 : 0,
     );
 
@@ -332,12 +351,14 @@ sub update_client {
     my $table = $self->_clients_table;
     $dbh->do(
         "UPDATE $table
-            SET client_name = ?, redirect_uris = ?, allowed_claims = ?, is_active = ?, updated_on = NOW()
+            SET client_name = ?, redirect_uris = ?, allowed_claims = ?, allowed_categories = ?, denied_categories = ?, is_active = ?, updated_on = NOW()
          WHERE id = ?",
         undef,
         $args->{client_name},
         encode_json( $args->{redirect_uris} || [] ),
         encode_json( $self->_sanitize_claims( $args->{allowed_claims} ) ),
+        encode_json( $self->_sanitize_categories( $args->{allowed_categories} ) ),
+        encode_json( $self->_sanitize_categories( $args->{denied_categories} ) ),
         $args->{is_active} ? 1 : 0,
         $id,
     );
@@ -385,6 +406,50 @@ sub _sanitize_claims {
     my ( $self, $claims ) = @_;
     $claims ||= [];
     return [ grep { Koha::Plugin::Com::Lmscloud::OAuthProvider::ClaimsCatalog->is_valid_key($_) } @$claims ];
+}
+
+# Keeps only category codes that actually exist, so a hand-crafted POST
+# can't smuggle arbitrary strings into allowed_categories/denied_categories
+# (checkbox values in the admin UI already come from this same list, so
+# this is defense-in-depth, not the primary safeguard).
+sub _sanitize_categories {
+    my ( $self, $categories ) = @_;
+    $categories ||= [];
+    my %valid = map { $_->categorycode => 1 } Koha::Patron::Categories->search->as_list;
+    return [ grep { $valid{$_} } @$categories ];
+}
+
+# Per-client patron-category access control, gating the login itself at
+# /authorize (see Controller::_handle_login) - replaces what used to be the
+# global DivibibAuthDisabledForGroups system preference (LMSCloud-fork-only,
+# and instance-wide rather than per-client). $client is the hashref shape
+# get_client()/list_clients() return (allowed_categories/denied_categories
+# already JSON-decoded into arrayrefs).
+#
+#   denied_categories non-empty and the patron's category is in it      -> not allowed
+#   allowed_categories non-empty and the patron's category is NOT in it -> not allowed
+#   otherwise                                                            -> allowed
+#
+# An empty/missing allowed_categories means "no allow-list restriction"
+# (every category is fine), matching how every other claim-selection list
+# in this plugin defaults to "nothing extra configured" rather than
+# "nothing allowed". denied_categories is checked first and wins on
+# overlap, so admins can carve out an exception from an otherwise-broad
+# allow-list.
+sub is_client_allowed_for_patron {
+    my ( $self, $client, $patron ) = @_;
+    return 1 unless $client;
+
+    my $categorycode = $patron->categorycode;
+    return 1 unless defined $categorycode && length $categorycode;
+
+    my $denied = $client->{denied_categories} || [];
+    return 0 if grep { lc($_) eq lc($categorycode) } @$denied;
+
+    my $allowed = $client->{allowed_categories} || [];
+    return 0 if @$allowed && !grep { lc($_) eq lc($categorycode) } @$allowed;
+
+    return 1;
 }
 
 sub _generate_unused_client_id {
@@ -620,7 +685,7 @@ sub discovery_document {
         response_types_supported             => ['code'],
         subject_types_supported              => ['public'],
         id_token_signing_alg_values_supported => ['HS256'],
-        scopes_supported                      => [ 'openid', 'profile' ],
+        scopes_supported                      => [ 'openid', 'profile', 'address', 'email', 'phone' ],
         token_endpoint_auth_methods_supported => [ 'client_secret_basic', 'client_secret_post' ],
         grant_types_supported                => [ 'authorization_code', 'refresh_token' ],
         code_challenge_methods_supported     => ['S256'],
@@ -713,10 +778,12 @@ sub configure {
 
     if ( $action eq 'create' ) {
         my ( $client_id, $secret ) = $self->create_client(
-            {   client_name    => scalar $cgi->param('client_name'),
-                redirect_uris  => $self->_split_lines( scalar $cgi->param('redirect_uris') ),
-                allowed_claims => [ _multi_param( $cgi, 'allowed_claims' ) ],
-                is_active      => 1,
+            {   client_name        => scalar $cgi->param('client_name'),
+                redirect_uris      => $self->_split_lines( scalar $cgi->param('redirect_uris') ),
+                allowed_claims     => [ _multi_param( $cgi, 'allowed_claims' ) ],
+                allowed_categories => [ _multi_param( $cgi, 'allowed_categories' ) ],
+                denied_categories  => [ _multi_param( $cgi, 'denied_categories' ) ],
+                is_active          => 1,
             }
         );
         return $self->_render_configure( { new_client_id => $client_id, new_secret => $secret } );
@@ -724,10 +791,12 @@ sub configure {
     elsif ( $action eq 'update' ) {
         $self->update_client(
             scalar $cgi->param('id'),
-            {   client_name    => scalar $cgi->param('client_name'),
-                redirect_uris  => $self->_split_lines( scalar $cgi->param('redirect_uris') ),
-                allowed_claims => [ _multi_param( $cgi, 'allowed_claims' ) ],
-                is_active      => $cgi->param('is_active') ? 1 : 0,
+            {   client_name        => scalar $cgi->param('client_name'),
+                redirect_uris      => $self->_split_lines( scalar $cgi->param('redirect_uris') ),
+                allowed_claims     => [ _multi_param( $cgi, 'allowed_claims' ) ],
+                allowed_categories => [ _multi_param( $cgi, 'allowed_categories' ) ],
+                denied_categories  => [ _multi_param( $cgi, 'denied_categories' ) ],
+                is_active          => $cgi->param('is_active') ? 1 : 0,
             }
         );
     }
@@ -757,9 +826,14 @@ sub _render_configure {
     my $cgi      = $self->{cgi};
     my $template = $self->get_template( { file => 'configure.tt' } );
 
+    my @categories =
+        map { { categorycode => $_->categorycode, description => $_->description } }
+        Koha::Patron::Categories->search( {}, { order_by => 'categorycode' } )->as_list;
+
     $template->param(
         clients          => $self->list_clients,
         claims_catalog   => Koha::Plugin::Com::Lmscloud::OAuthProvider::ClaimsCatalog->catalog,
+        patron_categories => \@categories,
         settings         => $self->settings,
         base_url         => C4::Context->preference('staffClientBaseURL') || '',
         class_name       => uri_escape( ref($self) ),
