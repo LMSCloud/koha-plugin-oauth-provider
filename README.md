@@ -10,16 +10,6 @@ released.
 
 ## 1. Why this architecture
 
-Koha today has **no** OAuth server for regular user logins. There is only:
-
-- `Koha::Auth::Client::OAuth` - Koha acting as an OAuth **client** against an external IdP
-  (`/api/v1/public/oauth/login/{provider}/{interface}`). That's the opposite direction of
-  what this plugin needs.
-- `Koha::REST::V1::OAuth` - a very narrow client-credentials server
-  (`/api/v1/oauth/token`, gated by the `RESTOAuth2ClientCredentials` system preference)
-  that binds one API key to exactly **one** patron. No authorization-code flow, no
-  "any user logs in with a password".
-
 This plugin therefore builds a self-contained, complete OAuth2 authorization-code flow
 from scratch, as plugin-owned REST routes under `/api/v1/contrib/oauthprovider/`.
 
@@ -31,10 +21,10 @@ an extra layer of defense.
 clients are allowed, the `id_token` can be **HS256-signed using the application's own
 `client_secret` as the HMAC key**. That's spec-compliant OIDC (OIDC Core explicitly
 allows HS256 via `client_secret`) and needs no asymmetric key management, no real JWKS,
-no new CPAN module - `Mojo::JWT` (already vendored, `cpanfile:83`) is enough. The
-trade-off: tools/libraries that insist on RS256 + JWKS won't work with it "out of the
-box". A `/jwks` endpoint exists anyway (always returns an empty key set) - purely so that
-discovery clients which blindly fetch `jwks_uri` don't get a 404.
+no new CPAN module - `Mojo::JWT` is enough. The trade-off: tools/libraries that insist on 
+RS256 + JWKS won't work with it "out of the box". A `/jwks` endpoint exists anyway (always 
+returns an empty key set) - purely so that discovery clients which blindly fetch 
+`jwks_uri` don't get a 404.
 
 One genuine trade-off that can't be solved inside the plugin itself: per spec, the OIDC
 discovery document belongs at `/.well-known/openid-configuration` on the domain root, but
@@ -149,14 +139,8 @@ informational-only reason described above for `address`.
 
 ### `fsk` and `status` (LMSCloud "Onleihe"/divibib patron status - reimplemented, no fork dependency)
 
-These two mirror what `opac/opac-divibib-auth.pl` returns to the German library
-e-lending service **divibib "Onleihe"**, in installs of the LMSCloud Koha fork that use
-it. That script computes its response via `C4::External::DivibibPatronStatus`, a module
-that only exists in the LMSCloud fork - it is **not** part of community Koha. Since this
-plugin is meant to install on any Koha, its logic is reimplemented from scratch in
-`ClaimsCatalog.pm` (`_patron_status`), using only `Koha::Patron`'s public API and system
-preferences that ship with core Koha (`OverduesBlockCirc`, `noissuescharge`). Both are
-released as JSON numbers.
+These two fields return data required by the German library e-lending service 
+**divibib "Onleihe"**. 
 
 `fsk` is a German age-rating tier, derived from `Koha::Patron::get_age`:
 
@@ -184,16 +168,9 @@ digital media. The checks run **in this exact order** and stop at the first matc
 | -     | none of the above apply                                                   | `3`      |
 
 The codes `-2` (wrong password), `-1` (wrong credentials) and `0`/`2` (deleted/test
-account) that `opac-divibib-auth.pl`'s own POD documents are **not reachable** here at
-all: in the original module they only ever come from its constructor re-validating a
-submitted plaintext password, a step this plugin has no reason to replicate - a patron
-only ever reaches `/userinfo` after already passing `checkpw_internal` earlier in the
-OAuth flow, so a credential-related status here would be meaningless. This plugin never
-has that plaintext password available at `/userinfo` time in any case (only momentarily
-during the earlier `/authorize` login step, and never persisted).
+account) are **not reachable** here at all. 
 
-The original module's `-4` ("patron category blocked", driven by the global
-`DivibibAuthDisabledForGroups` system preference) is **also not reachable** here, for a
+The status `-4` ("patron category blocked") is **also not reachable** here, for a
 different reason: that check has been replaced entirely by a per-client access-control
 gate at `/authorize` rather than an informational claim value - see section 4. A patron
 whose category isn't eligible for a given client never gets an `access_token` for it in
@@ -206,10 +183,8 @@ no reason.
 
 ## 4. Per-client patron category access control
 
-Replaces what used to be a single, instance-wide `DivibibAuthDisabledForGroups` system
-preference (LMSCloud-fork-only) with a per-client, admin-configurable pair of patron
-category lists, set per application under *Plugins &rarr; OAuth2 / OpenID Connect
-Identity Provider &rarr; Configure*:
+This is a per-client, admin-configurable pair of patron category lists, set per 
+application under *Plugins &rarr; OAuth2 / OpenID Connect Identity Provider &rarr; Configure*:
 
 - **Allowed patron categories** (optional): if any are checked, only patrons in one of
   these categories can successfully log in for *that* client. Leaving all unchecked
