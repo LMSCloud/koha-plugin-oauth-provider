@@ -1,0 +1,186 @@
+[% USE Koha %]
+[% TRY %]
+    [% PROCESS "$PLUGIN_DIR/i18n/${LANG}.inc" %]
+[% CATCH %]
+    [% PROCESS "$PLUGIN_DIR/i18n/default.inc" %]
+[% END %]
+[% INCLUDE 'doc-head-open.inc' %]
+<title>[% T.cfg_title %]</title>
+[% INCLUDE 'doc-head-close.inc' %]
+</head>
+<body id="plugins_oauthprovider_configure" class="plugins">
+[% WRAPPER 'header.inc' %][% END %]
+[% WRAPPER 'sidebar.inc' %][% END %]
+
+<div class="main container-fluid">
+  <div class="row">
+    <div id="col-content" class="col-md-10 order-md-2">
+
+      <h1>[% T.cfg_heading %]</h1>
+
+      <p>[% T.cfg_intro %]</p>
+
+      <h2>[% T.cfg_settings_heading %]</h2>
+      <form method="post">
+        <input type="hidden" name="action" value="save_settings">
+        <fieldset class="rows">
+          <ol>
+            <li>
+              <label for="issuer_url">[% T.cfg_issuer_label %]</label>
+              <input type="url" id="issuer_url" name="issuer_url" size="60"
+                     value="[% settings.issuer_url | html %]"
+                     placeholder="https://opac.your-library.org/api/v1/contrib/oauthprovider">
+              <div class="hint">
+                [% T.cfg_issuer_hint_pre %]<code>[% settings.issuer_url | html %]/.well-known/openid-configuration</code>[% T.cfg_issuer_hint_post %]
+              </div>
+            </li>
+          </ol>
+        </fieldset>
+        <fieldset class="action">
+          <input type="submit" value="[% T.common_save %]" class="btn btn-primary">
+        </fieldset>
+      </form>
+
+      [% IF new_secret %]
+        <div class="dialog message">
+          <strong>[% T.cfg_new_secret_title %]</strong> [% T.cfg_new_secret_body %]
+          <fieldset class="rows">
+            <ol>
+              <li><label>[% T.cfg_client_id_label %]</label> <code>[% new_client_id | html %]</code></li>
+              <li><label>[% T.cfg_client_secret_label %]</label> <code>[% new_secret | html %]</code></li>
+            </ol>
+          </fieldset>
+        </div>
+      [% END %]
+
+      <h2>[% T.cfg_apps_heading %]</h2>
+      [% IF clients.size == 0 %]
+        <p>[% T.cfg_no_apps %]</p>
+      [% ELSE %]
+        <table class="table">
+          <thead>
+            <tr>
+              <th>[% T.cfg_th_name %]</th>
+              <th>[% T.cfg_th_client_id %]</th>
+              <th>[% T.cfg_th_redirect_uris %]</th>
+              <th>[% T.cfg_th_claims %]</th>
+              <th>[% T.cfg_th_status %]</th>
+              <th>[% T.cfg_th_actions %]</th>
+            </tr>
+          </thead>
+          <tbody>
+            [% FOREACH client IN clients %]
+              <tr>
+                <td>[% client.client_name | html %]</td>
+                <td><code>[% client.client_id | html %]</code></td>
+                <td>
+                  [% FOREACH uri IN client.redirect_uris %]
+                    <div>[% uri | html %]</div>
+                  [% END %]
+                </td>
+                <td>
+                  [% IF client.allowed_claims.size == 0 %]
+                    <em>[% T.cfg_only_userid %]</em>
+                  [% ELSE %]
+                    [% client.allowed_claims.join(', ') | html %]
+                  [% END %]
+                </td>
+                <td>[% IF client.is_active %][% T.cfg_status_active %][% ELSE %]<em>[% T.cfg_status_inactive %]</em>[% END %]</td>
+                <td>
+                  <a class="btn btn-default btn-xs"
+                     href="/cgi-bin/koha/plugins/run.pl?class=[% class_name %]&amp;method=configure&amp;edit=[% client.id %]">
+                    [% T.cfg_edit %]
+                  </a>
+                  <form method="post" style="display:inline" onsubmit="return confirm('[% T.cfg_confirm_regenerate | html %]');">
+                    <input type="hidden" name="action" value="regenerate_secret">
+                    <input type="hidden" name="id" value="[% client.id %]">
+                    <button type="submit" class="btn btn-default btn-xs">[% T.cfg_regenerate %]</button>
+                  </form>
+                  <form method="post" style="display:inline" onsubmit="return confirm('[% T.cfg_confirm_delete | html %]');">
+                    <input type="hidden" name="action" value="delete">
+                    <input type="hidden" name="id" value="[% client.id %]">
+                    <button type="submit" class="btn btn-default btn-xs">[% T.cfg_delete %]</button>
+                  </form>
+                </td>
+              </tr>
+            [% END %]
+          </tbody>
+        </table>
+      [% END %]
+
+      [% IF edit_client %]
+        <h2>[% T.cfg_edit_heading_pre %][% edit_client.client_name | html %]</h2>
+        <form method="post">
+          <input type="hidden" name="action" value="update">
+          <input type="hidden" name="id" value="[% edit_client.id %]">
+          <fieldset class="rows">
+            <ol>
+              <li>
+                <label for="client_name">[% T.cfg_name_label %]</label>
+                <input type="text" id="client_name" name="client_name" size="40" value="[% edit_client.client_name | html %]" required>
+              </li>
+              <li>
+                <label for="redirect_uris">[% T.cfg_redirect_uris_label %]</label>
+                <textarea id="redirect_uris" name="redirect_uris" rows="4" cols="60">[% edit_client.redirect_uris.join("\n") | html %]</textarea>
+              </li>
+              <li>
+                <label>[% T.cfg_claims_label %]</label>
+                [% FOREACH claim IN claims_catalog %]
+                  [% SET label_key = 'claim_label_' _ claim.key %]
+                  <label style="display:block;font-weight:normal">
+                    <input type="checkbox" name="allowed_claims" value="[% claim.key %]"
+                      [% IF edit_client.allowed_claims.grep('^' _ claim.key _ '$').size %]checked[% END %]>
+                    [% T.$label_key %]
+                  </label>
+                [% END %]
+              </li>
+              <li>
+                <label style="display:block;font-weight:normal">
+                  <input type="checkbox" name="is_active" value="1" [% IF edit_client.is_active %]checked[% END %]>
+                  [% T.cfg_active_label %]
+                </label>
+              </li>
+            </ol>
+          </fieldset>
+          <fieldset class="action">
+            <input type="submit" value="[% T.common_save %]" class="btn btn-primary">
+            <a class="btn btn-default" href="/cgi-bin/koha/plugins/run.pl?class=[% class_name %]&amp;method=configure">[% T.cfg_cancel %]</a>
+          </fieldset>
+        </form>
+      [% ELSE %]
+        <h2>[% T.cfg_add_heading %]</h2>
+        <form method="post">
+          <input type="hidden" name="action" value="create">
+          <fieldset class="rows">
+            <ol>
+              <li>
+                <label for="client_name">[% T.cfg_name_label %]</label>
+                <input type="text" id="client_name" name="client_name" size="40" required>
+              </li>
+              <li>
+                <label for="redirect_uris">[% T.cfg_redirect_uris_label %]</label>
+                <textarea id="redirect_uris" name="redirect_uris" rows="4" cols="60" placeholder="https://app.example.org/oauth/callback"></textarea>
+              </li>
+              <li>
+                <label>[% T.cfg_claims_label %]</label>
+                [% FOREACH claim IN claims_catalog %]
+                  [% SET label_key = 'claim_label_' _ claim.key %]
+                  <label style="display:block;font-weight:normal">
+                    <input type="checkbox" name="allowed_claims" value="[% claim.key %]">
+                    [% T.$label_key %]
+                  </label>
+                [% END %]
+              </li>
+            </ol>
+          </fieldset>
+          <fieldset class="action">
+            <input type="submit" value="[% T.cfg_create_submit %]" class="btn btn-primary">
+          </fieldset>
+        </form>
+      [% END %]
+
+    </div>
+  </div>
+</div>
+
+[% INCLUDE 'intranet-bottom.inc' %]

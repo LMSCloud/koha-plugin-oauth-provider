@@ -1,0 +1,56 @@
+[% TRY %]
+    [% PROCESS "$PLUGIN_DIR/i18n/${LANG}.inc" %]
+[% CATCH %]
+    [% PROCESS "$PLUGIN_DIR/i18n/default.inc" %]
+[% END %]
+<!DOCTYPE html>
+<html lang="[% LANG | html %]">
+<head>
+<meta charset="utf-8">
+<title>[% T.login_title %]</title>
+<style>
+    body { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; background: #f4f6f8; margin: 0; padding: 0; }
+    .box { max-width: 380px; margin: 8vh auto; background: #fff; border-radius: 8px; padding: 2.5em; box-shadow: 0 1px 4px rgba(0,0,0,0.12); }
+    h1 { font-size: 1.2em; margin: 0 0 0.2em; }
+    p.client { color: #555; margin-top: 0; margin-bottom: 1.5em; }
+    label { display: block; font-size: 0.9em; margin: 1em 0 0.3em; color: #333; }
+    input[type=text], input[type=password] { width: 100%; box-sizing: border-box; padding: 0.6em; border: 1px solid #ccc; border-radius: 4px; font-size: 1em; }
+    button { margin-top: 1.5em; width: 100%; padding: 0.7em; border: 0; border-radius: 4px; background: #205b96; color: #fff; font-size: 1em; cursor: pointer; }
+    button:hover { background: #184573; }
+    .error { background: #fdecea; color: #a12622; border: 1px solid #f5c6cb; border-radius: 4px; padding: 0.7em 1em; font-size: 0.9em; margin-bottom: 1em; }
+</style>
+</head>
+<body>
+<div class="box">
+    <h1>[% T.login_heading %]</h1>
+    <p class="client">
+        [% IF client_name %][% T.login_client_intro_pre %][% client_name | html %][% T.login_client_intro_post %][% END %]
+    </p>
+
+    [% IF error == 'invalid_credentials' %]
+        <div class="error">[% T.login_error_invalid_credentials %]</div>
+    [% ELSIF error == 'missing_credentials' %]
+        <div class="error">[% T.login_error_missing_credentials %]</div>
+    [% END %]
+
+    <form method="post" action="">
+        <input type="hidden" name="stage" value="login">
+        <input type="hidden" name="client_id" value="[% client_id | html %]">
+        <input type="hidden" name="redirect_uri" value="[% redirect_uri | html %]">
+        <input type="hidden" name="state" value="[% state | html %]">
+        <input type="hidden" name="scope" value="[% scope | html %]">
+        <input type="hidden" name="code_challenge" value="[% code_challenge | html %]">
+        <input type="hidden" name="code_challenge_method" value="[% code_challenge_method | html %]">
+        <input type="hidden" name="nonce" value="[% nonce | html %]">
+
+        <label for="userid">[% T.login_userid_label %]</label>
+        <input type="text" id="userid" name="userid" autocomplete="username" required autofocus>
+
+        <label for="password">[% T.login_password_label %]</label>
+        <input type="password" id="password" name="password" autocomplete="current-password" required>
+
+        <button type="submit">[% T.login_submit %]</button>
+    </form>
+</div>
+</body>
+</html>

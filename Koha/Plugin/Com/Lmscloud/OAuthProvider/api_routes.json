@@ -1,0 +1,108 @@
+{
+    "/authorize": {
+        "get": {
+            "x-mojo-to": "Com::Lmscloud::OAuthProvider::Controller#authorize_get",
+            "operationId": "oauthProviderAuthorizeGet",
+            "tags": ["oauthprovider"],
+            "produces": ["text/html"],
+            "parameters": [
+                { "name": "response_type", "in": "query", "required": true, "type": "string" },
+                { "name": "client_id", "in": "query", "required": true, "type": "string" },
+                { "name": "redirect_uri", "in": "query", "required": true, "type": "string" },
+                { "name": "state", "in": "query", "required": false, "type": "string" },
+                { "name": "scope", "in": "query", "required": false, "type": "string" },
+                { "name": "code_challenge", "in": "query", "required": false, "type": "string" },
+                { "name": "code_challenge_method", "in": "query", "required": false, "type": "string" },
+                { "name": "nonce", "in": "query", "required": false, "type": "string" }
+            ],
+            "responses": {
+                "200": { "description": "Login form" },
+                "400": { "description": "Invalid authorization request" }
+            }
+        },
+        "post": {
+            "x-mojo-to": "Com::Lmscloud::OAuthProvider::Controller#authorize_post",
+            "operationId": "oauthProviderAuthorizePost",
+            "tags": ["oauthprovider"],
+            "produces": ["text/html"],
+            "parameters": [
+                { "name": "stage", "in": "formData", "required": false, "type": "string" },
+                { "name": "client_id", "in": "formData", "required": false, "type": "string" },
+                { "name": "redirect_uri", "in": "formData", "required": false, "type": "string" },
+                { "name": "state", "in": "formData", "required": false, "type": "string" },
+                { "name": "scope", "in": "formData", "required": false, "type": "string" },
+                { "name": "code_challenge", "in": "formData", "required": false, "type": "string" },
+                { "name": "code_challenge_method", "in": "formData", "required": false, "type": "string" },
+                { "name": "nonce", "in": "formData", "required": false, "type": "string" },
+                { "name": "userid", "in": "formData", "required": false, "type": "string" },
+                { "name": "password", "in": "formData", "required": false, "type": "string" },
+                { "name": "ticket", "in": "formData", "required": false, "type": "string" },
+                { "name": "consent", "in": "formData", "required": false, "type": "string" }
+            ],
+            "responses": {
+                "200": { "description": "Consent form or error page" },
+                "302": { "description": "Redirect back to the client with a code or error" },
+                "400": { "description": "Invalid authorization request" }
+            }
+        }
+    },
+    "/token": {
+        "post": {
+            "x-mojo-to": "Com::Lmscloud::OAuthProvider::Controller#token",
+            "operationId": "oauthProviderToken",
+            "tags": ["oauthprovider"],
+            "produces": ["application/json"],
+            "parameters": [
+                { "name": "grant_type", "in": "formData", "required": true, "type": "string" },
+                { "name": "code", "in": "formData", "required": false, "type": "string" },
+                { "name": "redirect_uri", "in": "formData", "required": false, "type": "string" },
+                { "name": "code_verifier", "in": "formData", "required": false, "type": "string" },
+                { "name": "refresh_token", "in": "formData", "required": false, "type": "string" },
+                { "name": "client_id", "in": "formData", "required": false, "type": "string" },
+                { "name": "client_secret", "in": "formData", "required": false, "type": "string" }
+            ],
+            "responses": {
+                "200": { "description": "Token response", "schema": { "type": "object" } },
+                "400": { "description": "Invalid request/grant", "schema": { "type": "object" } },
+                "401": { "description": "Invalid client", "schema": { "type": "object" } }
+            }
+        }
+    },
+    "/userinfo": {
+        "get": {
+            "x-mojo-to": "Com::Lmscloud::OAuthProvider::Controller#userinfo",
+            "operationId": "oauthProviderUserinfo",
+            "tags": ["oauthprovider"],
+            "produces": ["application/json"],
+            "parameters": [],
+            "responses": {
+                "200": { "description": "Userinfo claims", "schema": { "type": "object" } },
+                "401": { "description": "Invalid or expired access token", "schema": { "type": "object" } }
+            }
+        }
+    },
+    "/.well-known/openid-configuration": {
+        "get": {
+            "x-mojo-to": "Com::Lmscloud::OAuthProvider::Controller#discovery",
+            "operationId": "oauthProviderDiscovery",
+            "tags": ["oauthprovider"],
+            "produces": ["application/json"],
+            "parameters": [],
+            "responses": {
+                "200": { "description": "OIDC discovery document", "schema": { "type": "object" } }
+            }
+        }
+    },
+    "/jwks": {
+        "get": {
+            "x-mojo-to": "Com::Lmscloud::OAuthProvider::Controller#jwks",
+            "operationId": "oauthProviderJwks",
+            "tags": ["oauthprovider"],
+            "produces": ["application/json"],
+            "parameters": [],
+            "responses": {
+                "200": { "description": "JSON Web Key Set (always empty - id_tokens are HS256, not asymmetric)", "schema": { "type": "object" } }
+            }
+        }
+    }
+}

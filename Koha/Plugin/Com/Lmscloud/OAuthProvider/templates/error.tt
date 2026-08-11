@@ -1,0 +1,27 @@
+[% TRY %]
+    [% PROCESS "$PLUGIN_DIR/i18n/${LANG}.inc" %]
+[% CATCH %]
+    [% PROCESS "$PLUGIN_DIR/i18n/default.inc" %]
+[% END %]
+[% SET message_key = 'error_' _ error_code %]
+<!DOCTYPE html>
+<html lang="[% LANG | html %]">
+<head>
+<meta charset="utf-8">
+<title>[% T.error_title %]</title>
+<style>
+    body { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; background: #f4f6f8; margin: 0; padding: 0; }
+    .box { max-width: 420px; margin: 8vh auto; background: #fff; border-radius: 8px; padding: 2.5em; box-shadow: 0 1px 4px rgba(0,0,0,0.12); }
+    h1 { font-size: 1.2em; margin: 0 0 0.6em; color: #a12622; }
+    p { color: #333; }
+    code { background: #f0f0f0; padding: 0.1em 0.4em; border-radius: 3px; font-size: 0.9em; }
+</style>
+</head>
+<body>
+<div class="box">
+    <h1>[% T.error_heading %]</h1>
+    <p>[% T.$message_key OR T.error_generic %]</p>
+    [% IF error_code %]<p><code>[% error_code | html %]</code></p>[% END %]
+</div>
+</body>
+</html>

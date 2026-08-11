@@ -1,0 +1,47 @@
+[% TRY %]
+    [% PROCESS "$PLUGIN_DIR/i18n/${LANG}.inc" %]
+[% CATCH %]
+    [% PROCESS "$PLUGIN_DIR/i18n/default.inc" %]
+[% END %]
+<!DOCTYPE html>
+<html lang="[% LANG | html %]">
+<head>
+<meta charset="utf-8">
+<title>[% T.consent_title %]</title>
+<style>
+    body { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; background: #f4f6f8; margin: 0; padding: 0; }
+    .box { max-width: 420px; margin: 8vh auto; background: #fff; border-radius: 8px; padding: 2.5em; box-shadow: 0 1px 4px rgba(0,0,0,0.12); }
+    h1 { font-size: 1.2em; margin: 0 0 0.6em; }
+    p { color: #333; }
+    ul { color: #333; padding-left: 1.3em; }
+    li { margin: 0.3em 0; }
+    .actions { display: flex; gap: 0.8em; margin-top: 1.8em; }
+    button { flex: 1; padding: 0.7em; border: 0; border-radius: 4px; font-size: 1em; cursor: pointer; }
+    button.allow { background: #205b96; color: #fff; }
+    button.allow:hover { background: #184573; }
+    button.deny { background: #e5e7eb; color: #333; }
+    button.deny:hover { background: #d1d5db; }
+</style>
+</head>
+<body>
+<div class="box">
+    <h1>[% T.consent_heading_pre %][% client_name | html %][% T.consent_heading_post %]</h1>
+    <p>[% T.consent_intro %]</p>
+    <ul>
+        [% FOREACH key IN claim_keys %]
+            [% SET label_key = 'claim_label_' _ key %]
+            <li>[% T.$label_key %]</li>
+        [% END %]
+    </ul>
+
+    <form method="post" action="">
+        <input type="hidden" name="stage" value="consent">
+        <input type="hidden" name="ticket" value="[% ticket | html %]">
+        <div class="actions">
+            <button class="deny" type="submit" name="consent" value="deny">[% T.consent_deny %]</button>
+            <button class="allow" type="submit" name="consent" value="allow">[% T.consent_allow %]</button>
+        </div>
+    </form>
+</div>
+</body>
+</html>
