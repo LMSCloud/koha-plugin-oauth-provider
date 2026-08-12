@@ -837,6 +837,15 @@ sub _render_configure {
         settings         => $self->settings,
         base_url         => C4::Context->preference('staffClientBaseURL') || '',
         class_name       => uri_escape( ref($self) ),
+        # Raw (unescaped) class name for hidden form fields - forms submit
+        # their own class/method fields so plugins/run.pl's dispatch doesn't
+        # depend on the browser preserving this page's query string on a
+        # same-page POST (some browsers drop it when <form> has no explicit
+        # action; Koha::Plugins::Handler::run() then gets an undef $method
+        # and warns "Plugin does not have method"). uri_escape'd class_name
+        # above is for embedding directly in an href's query string instead
+        # - do not reuse it here, the browser already encodes form values.
+        plugin_class     => ref($self),
         %$extra,
     );
 
@@ -864,7 +873,7 @@ sub tool {
     );
 
     my $template = $self->get_template( { file => 'tool.tt' } );
-    $template->param( active_tokens => $active_tokens );
+    $template->param( active_tokens => $active_tokens, plugin_class => ref($self) );
 
     print $cgi->header( -charset => 'utf-8' );
     print $template->output;

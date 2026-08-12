@@ -1,3 +1,4 @@
+[% USE raw %]
 [% USE Koha %]
 [% TRY %]
     [% PROCESS "$PLUGIN_DIR/i18n/${LANG}.inc" %]
@@ -5,37 +6,53 @@
     [% PROCESS "$PLUGIN_DIR/i18n/default.inc" %]
 [% END %]
 [% INCLUDE 'doc-head-open.inc' %]
-<title>[% T.tool_title %]</title>
+<title>[% T.tool_title | $raw %]</title>
 [% INCLUDE 'doc-head-close.inc' %]
 </head>
 <body id="plugins_oauthprovider_tool" class="plugins">
+[% INCLUDE 'html_helpers.inc' %]
 [% WRAPPER 'header.inc' %][% END %]
-[% WRAPPER 'sidebar.inc' %][% END %]
+
+[% WRAPPER 'sub-header.inc' %]
+    [% WRAPPER breadcrumbs %]
+        [% WRAPPER breadcrumb_item %]
+            <a href="/cgi-bin/koha/admin/admin-home.pl">Administration</a>
+        [% END %]
+        [% WRAPPER breadcrumb_item %]
+            <a href="/cgi-bin/koha/plugins/plugins-home.pl">Plugins</a>
+        [% END %]
+        [% WRAPPER breadcrumb_item bc_active= 1 %]
+            <span>[% T.tool_title | $raw %]</span>
+        [% END %]
+    [% END #/ WRAPPER breadcrumbs %]
+[% END #/ WRAPPER sub-header.inc %]
 
 <div class="main container-fluid">
   <div class="row">
-    <div id="col-content" class="col-md-10 order-md-2">
+    <div id="col-content" class="col-sm-12">
 
-      <h1>[% T.tool_heading %]</h1>
+      <h1>[% T.tool_heading | $raw %]</h1>
 
       <form method="post">
+        <input type="hidden" name="class" value="[% plugin_class | html %]">
+        <input type="hidden" name="method" value="tool">
         <input type="hidden" name="cleanup" value="1">
-        <p>[% T.tool_cleanup_intro %]</p>
-        <input type="submit" class="btn btn-primary" value="[% T.tool_cleanup_button %]">
+        <p>[% T.tool_cleanup_intro | $raw %]</p>
+        <input type="submit" class="btn btn-primary" value="[% T.tool_cleanup_button | $raw %]">
       </form>
 
-      <h2>[% T.tool_active_heading %]</h2>
+      <h2>[% T.tool_active_heading | $raw %]</h2>
       [% IF active_tokens.size == 0 %]
-        <p>[% T.tool_no_active %]</p>
+        <p>[% T.tool_no_active | $raw %]</p>
       [% ELSE %]
         <table id="oauthprovider-tokens" class="table">
           <thead>
             <tr>
-              <th>[% T.tool_th_app %]</th>
-              <th>[% T.tool_th_type %]</th>
-              <th>[% T.tool_th_borrowernumber %]</th>
-              <th>[% T.tool_th_created %]</th>
-              <th>[% T.tool_th_expires %]</th>
+              <th>[% T.tool_th_app | $raw %]</th>
+              <th>[% T.tool_th_type | $raw %]</th>
+              <th>[% T.tool_th_borrowernumber | $raw %]</th>
+              <th>[% T.tool_th_created | $raw %]</th>
+              <th>[% T.tool_th_expires | $raw %]</th>
             </tr>
           </thead>
           <tbody>
