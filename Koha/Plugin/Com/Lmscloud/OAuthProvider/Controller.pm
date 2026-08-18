@@ -6,9 +6,11 @@ use Mojo::Base 'Mojolicious::Controller';
 use Mojo::URL;
 
 use C4::Auth qw(checkpw_internal);
+use C4::Context;
 use Digest::SHA qw(sha256);
 use MIME::Base64 qw(decode_base64 encode_base64url);
 
+use Koha::Auth::TwoFactorAuth;
 use Koha::Patrons;
 
 # Mojolicious autoloads this controller purely off the x-mojo-to string in
@@ -72,9 +74,11 @@ sub authorize_get {
 
 # =========================== POST /authorize ==============================
 #
-# Handles both steps of the flow via a hidden 'stage' field: 'login' (userid
-# + password) and 'consent' (allow/deny, gated by a signed ticket minted at
-# the end of the login step).
+# Handles all steps of the flow via a hidden 'stage' field: 'login' (userid
+# + password), 'otp' (one-time code, only for patrons with 2FA enabled -
+# gated by a signed ticket minted at the end of the login step) and
+# 'consent' (allow/deny, gated by a signed ticket minted at the end of the
+# login/otp step).
 
 sub authorize_post {
     my $c = shift->openapi->valid_input or return;
@@ -83,6 +87,7 @@ sub authorize_post {
     my $stage  = $c->validation->param('stage') // 'login';
 
     return _handle_consent( $c, $plugin ) if $stage eq 'consent';
+    return _handle_otp( $c, $plugin ) if $stage eq 'otp';
     return _handle_login( $c, $plugin );
 }
 
@@ -137,6 +142,115 @@ sub _handle_login {
         return _redirect_with_error( $c, $redirect_uri, 'access_denied', $authz_ctx->{state} );
     }
 
+    # checkpw_internal() only verifies the password - it knows nothing about
+    # Koha's own two-factor authentication (that lives entirely inside
+    # C4::Auth::checkauth()'s session-based flow, which this plugin never
+    # goes through, on purpose - see create_login_ticket's doc). A patron who
+    # has 2FA enabled must not be able to fully authenticate via this plugin
+    # with just their password, so that check is replicated here explicitly.
+    if ( _patron_requires_2fa($patron) ) {
+        my $ticket = $plugin->create_login_ticket(
+            {   borrowernumber => $patron->borrowernumber,
+                %$authz_ctx,
+            }
+        );
+        return _render_otp( $c, $plugin, { %$authz_ctx, ticket => $ticket, error => undef } );
+    }
+
+    return _proceed_after_authentication( $c, $plugin, $client, $client_id, $patron, $authz_ctx );
+}
+
+# True if this patron must pass a one-time-code challenge before this plugin
+# considers them authenticated: Koha's 2FA system preference is not
+# 'disabled', and the patron has actually completed 2FA enrollment (has a
+# secret on file). Deliberately does NOT replicate the 'enforced' mode's
+# behaviour of *requiring* not-yet-enrolled patrons to set up 2FA there and
+# then - that needs a QR-code enrollment UI this plugin doesn't have, and is
+# out of scope for "accounts where 2FA is already enabled".
+sub _patron_requires_2fa {
+    my ($patron) = @_;
+    return 0 if C4::Context->preference('TwoFactorAuthentication') eq 'disabled';
+    return $patron->secret ? 1 : 0;
+}
+
+sub _handle_otp {
+    my ( $c, $plugin ) = @_;
+    my $v = $c->validation;
+
+    my $ticket   = $v->param('ticket');
+    my $otp_code = $v->param('otp_token');
+
+    # Same trust model as the consent ticket: client_id, redirect_uri,
+    # borrowernumber, PKCE challenge/method, scope, state and nonce all come
+    # from the signed ticket minted at the end of the login step, never from
+    # client-submitted form fields.
+    my $claims = $plugin->verify_login_ticket($ticket);
+    unless ( $claims && $claims->{client_id} && $claims->{redirect_uri} && $claims->{borrowernumber} ) {
+        return _render_error( $c, $plugin, 'invalid_request' );
+    }
+
+    my $client = $plugin->get_client( $claims->{client_id} );
+    unless ( $client && $client->{is_active} ) {
+        return _render_error( $c, $plugin, 'unauthorized_client' );
+    }
+
+    my $patron = Koha::Patrons->find( $claims->{borrowernumber} );
+    unless ( $patron && _patron_requires_2fa($patron) ) {
+        return _render_error( $c, $plugin, 'invalid_request' );
+    }
+
+    my $authz_ctx = {
+        client_id             => $claims->{client_id},
+        client_name           => $client->{client_name},
+        redirect_uri          => $claims->{redirect_uri},
+        state                 => $claims->{state},
+        code_challenge        => $claims->{code_challenge},
+        code_challenge_method => $claims->{code_challenge_method},
+        scope                 => $claims->{scope},
+        nonce                 => $claims->{nonce},
+    };
+
+    my $auth = Koha::Auth::TwoFactorAuth->new( { patron => $patron } );
+    my $verified = $otp_code && length($otp_code) && $auth->verify($otp_code);
+    $auth->clear;
+    unless ($verified) {
+        return _render_otp( $c, $plugin, { %$authz_ctx, ticket => $ticket, error => 'invalid_otp' } );
+    }
+
+    return _proceed_after_authentication( $c, $plugin, $client, $claims->{client_id}, $patron, $authz_ctx );
+}
+
+# Shared tail of the login step, reached either straight from _handle_login
+# (no 2FA required) or from _handle_otp (2FA required and the code checked
+# out) - decides whether the consent screen can be skipped (consent_mode)
+# and either mints the authorization code right away or shows consent.tt.
+sub _proceed_after_authentication {
+    my ( $c, $plugin, $client, $client_id, $patron, $authz_ctx ) = @_;
+
+    # consent_mode 'never' always skips the consent screen; 'remember' skips
+    # it only once a prior consent already covers every claim the client is
+    # *currently* configured to receive (see
+    # OAuthProvider::consent_covers) - so widening a client's allowed_claims
+    # later makes patrons see the consent screen again, on the very first
+    # login after that change.
+    my $claim_keys = _claim_keys_for_client($client);
+    if (   $client->{consent_mode} eq 'never'
+        || ( $client->{consent_mode} eq 'remember'
+            && $plugin->consent_covers( $client_id, $patron->borrowernumber, $claim_keys ) ) )
+    {
+        my $code = $plugin->create_authorization_code(
+            {   client_id             => $client_id,
+                borrowernumber        => $patron->borrowernumber,
+                redirect_uri          => $authz_ctx->{redirect_uri},
+                code_challenge        => $authz_ctx->{code_challenge},
+                code_challenge_method => $authz_ctx->{code_challenge_method},
+                nonce                 => $authz_ctx->{nonce},
+                scope                 => $authz_ctx->{scope},
+            }
+        );
+        return _redirect_with_code( $c, $authz_ctx->{redirect_uri}, $code, $authz_ctx->{state} );
+    }
+
     my $ticket = $plugin->create_login_ticket(
         {   borrowernumber => $patron->borrowernumber,
             %$authz_ctx,
@@ -165,6 +279,12 @@ sub _handle_consent {
 
     if ( $decision ne 'allow' ) {
         return _redirect_with_error( $c, $claims->{redirect_uri}, 'access_denied', $claims->{state} );
+    }
+
+    my $client = $plugin->get_client( $claims->{client_id} );
+    if ( $client && $client->{consent_mode} eq 'remember' ) {
+        $plugin->remember_consent(
+            $claims->{client_id}, $claims->{borrowernumber}, _claim_keys_for_client($client) );
     }
 
     my $code = $plugin->create_authorization_code(
@@ -198,6 +318,27 @@ sub token {
         && $client->{is_active}
         && $plugin->verify_client_secret( $client, $client_secret ) )
     {
+        # Never logs the secret itself - just enough to tell apart the five
+        # distinct ways this can fail, since the client only ever sees a
+        # generic 401/invalid_client either way (RFC 6749 doesn't want a
+        # more specific error here, to avoid helping an attacker enumerate
+        # valid client_ids). Distinguishing "no secret received at all" from
+        # "a secret was received but didn't match" matters here: the former
+        # points at how the RP is transmitting credentials (Basic-Auth vs.
+        # POST body), the latter at what secret is actually configured.
+        my $auth_header_present = defined $c->req->headers->authorization && length $c->req->headers->authorization;
+        my $reason =
+              !$client_id                                     ? 'no client credentials received (neither an Authorization: Basic header nor client_id/client_secret form fields)'
+            : !$client                                        ? "unknown client_id '$client_id'"
+            : !$client->{is_active}                            ? "client '$client_id' is deactivated"
+            : ( !defined $client_secret || !length $client_secret )
+                  ? "client_id '$client_id' received but no client_secret at all (Authorization header present: "
+                    . ( $auth_header_present ? 'yes' : 'no' ) . ')'
+            :                                                     "client_secret did not match for '$client_id' (received: "
+                    . _mask_secret_preview($client_secret) . ", via "
+                    . ( $auth_header_present ? 'Authorization header' : 'form field' )
+                    . ", stored hash uses " . _bcrypt_prefix( $client->{client_secret_hash} ) . ')';
+        $c->app->log->warn("OAuthProvider /token: invalid_client - $reason");
         return $c->render( json => { error => 'invalid_client' }, status => 401 );
     }
 
@@ -209,6 +350,28 @@ sub token {
     }
 
     return $c->render( json => { error => 'unsupported_grant_type' }, status => 400 );
+}
+
+# Diagnostic-only, temporary: shows just enough of a rejected secret to
+# compare it against the known-correct value by eye (first/last 4 chars,
+# total length) without logging anything close to the full secret.
+sub _mask_secret_preview {
+    my ($secret) = @_;
+    my $len = length($secret);
+    return "<empty>" unless $len;
+    return "'$secret' (length $len)" if $len <= 8;
+    return "'" . substr( $secret, 0, 4 ) . ('*' x ( $len - 8 )) . substr( $secret, -4 ) . "' (length $len)";
+}
+
+# Diagnostic-only, temporary: the bcrypt algorithm id + cost factor prefix
+# (e.g. "$2a$08$") is not sensitive (no salt/hash material beyond what's
+# needed to identify the settings used) - useful to rule out a cost/format
+# mismatch between what created the hash and what's verifying it.
+sub _bcrypt_prefix {
+    my ($hash) = @_;
+    return 'n/a' unless defined $hash;
+    return $1 if $hash =~ /^(\$2[abxy]?\$\d+\$)/;
+    return "unrecognized format (length " . length($hash) . ")";
 }
 
 sub _extract_client_credentials {
@@ -250,8 +413,9 @@ sub _token_from_authorization_code {
         }
     }
 
+    my ( $access_ttl, $refresh_ttl ) = $plugin->effective_ttls($client);
     my ( $access_token, $refresh_token, $ttl ) =
-        $plugin->issue_token_pair( $client->{client_id}, $row->{borrowernumber}, $row->{scope} );
+        $plugin->issue_token_pair( $client->{client_id}, $row->{borrowernumber}, $row->{scope}, $access_ttl, $refresh_ttl );
 
     my %response = (
         access_token  => $access_token,
@@ -267,6 +431,7 @@ sub _token_from_authorization_code {
             borrowernumber => $row->{borrowernumber},
             nonce          => $row->{nonce},
             access_token   => $access_token,
+            access_ttl     => $ttl,
         );
     }
 
@@ -302,6 +467,7 @@ sub _token_from_refresh_token {
             client_secret  => $client_secret,
             borrowernumber => $borrowernumber,
             access_token   => $access_token,
+            access_ttl     => $ttl,
         );
     }
 
@@ -329,6 +495,10 @@ sub userinfo {
 
     my $auth_header = $c->req->headers->authorization // '';
     unless ( $auth_header =~ /^Bearer\s+(.+)$/i ) {
+        $c->app->log->warn(
+            'OAuthProvider /userinfo: invalid_token - no (or malformed) Authorization header ('
+            . ( length($auth_header) ? "received: '$auth_header'" : 'header absent/empty' ) . ')'
+        );
         $c->res->headers->www_authenticate('Bearer realm="oauthprovider"');
         return $c->render( json => { error => 'invalid_token' }, status => 401 );
     }
@@ -336,6 +506,10 @@ sub userinfo {
 
     my $row = $plugin->verify_access_token($token);
     unless ($row) {
+        $c->app->log->warn(
+            'OAuthProvider /userinfo: invalid_token - access token not found/expired/revoked (token length '
+            . length($token) . ')'
+        );
         $c->res->headers->www_authenticate('Bearer realm="oauthprovider", error="invalid_token"');
         return $c->render( json => { error => 'invalid_token' }, status => 401 );
     }
@@ -343,6 +517,10 @@ sub userinfo {
     my $client = $plugin->get_client( $row->{client_id} );
     my $patron = Koha::Patrons->find( $row->{borrowernumber} );
     unless ( $client && $patron ) {
+        $c->app->log->warn(
+            "OAuthProvider /userinfo: invalid_token - token valid but "
+            . ( !$client ? "client '$row->{client_id}' no longer exists" : "borrowernumber $row->{borrowernumber} no longer exists" )
+        );
         return $c->render( json => { error => 'invalid_token' }, status => 401 );
     }
 
@@ -382,33 +560,57 @@ sub jwks {
 sub _render_login {
     my ( $c, $plugin, $ctx ) = @_;
     my $lang  = $plugin->detect_public_language($c);
-    my $html  = $plugin->render_standalone_template( 'login.tt', $ctx, $lang );
+    # Pass the current route's own URL (no query string) as the form's
+    # action: the query string carries the original authorize params, and
+    # an empty action="" would make the browser resubmit those as a query
+    # string on the POST too, which
+    # Koha::REST::V1::Auth::validate_query_parameters rejects since POST
+    # /authorize only declares them as formData. Resolved via url_for
+    # ('current') rather than $c->req->url->path, since the latter comes
+    # back without its leading slash behind this app's reverse-proxy
+    # mount point, which turns it into a relative URL in the browser and
+    # duplicates the mount prefix.
+    my $html  = $plugin->render_standalone_template( 'login.tt', { %$ctx, action_path => $c->url_for('current') }, $lang );
+    return $c->render( text => $html, format => 'html' );
+}
+
+sub _render_otp {
+    my ( $c, $plugin, $ctx ) = @_;
+    my $lang = $plugin->detect_public_language($c);
+    my $html = $plugin->render_standalone_template( 'otp.tt', { %$ctx, action_path => $c->url_for('current') }, $lang );
     return $c->render( text => $html, format => 'html' );
 }
 
 sub _render_consent {
     my ( $c, $plugin, $client, $patron, $ctx ) = @_;
 
-    my %allowed = map { $_ => 1 } @{ $client->{allowed_claims} };
-    # 'userid' first (always released, not part of the catalog), then
-    # whichever catalog keys this client is allowed. The template looks up
-    # the translated label for each key itself (translation key
-    # "claim_label_<key>") - no display text is built here.
-    my @claim_keys = ('userid');
-    for my $entry ( @{ Koha::Plugin::Com::Lmscloud::OAuthProvider::ClaimsCatalog->catalog } ) {
-        push @claim_keys, $entry->{key} if $allowed{ $entry->{key} };
-    }
-
     my $lang = $plugin->detect_public_language($c);
     my $html = $plugin->render_standalone_template(
         'consent.tt',
         {   client_name => $client->{client_name},
-            claim_keys  => \@claim_keys,
+            claim_keys  => _claim_keys_for_client($client),
             ticket      => $ctx->{ticket},
+            action_path => $c->url_for('current'),
         },
         $lang
     );
     return $c->render( text => $html, format => 'html' );
+}
+
+# 'userid' first (always released, not part of the catalog), then whichever
+# catalog keys this client is allowed. The template looks up the translated
+# label for each key itself (translation key "claim_label_<key>") - no
+# display text is built here. Shared between rendering the consent screen
+# and deciding/recording what a patron has consented to.
+sub _claim_keys_for_client {
+    my ($client) = @_;
+
+    my %allowed = map { $_ => 1 } @{ $client->{allowed_claims} };
+    my @claim_keys = ('userid');
+    for my $entry ( @{ Koha::Plugin::Com::Lmscloud::OAuthProvider::ClaimsCatalog->catalog } ) {
+        push @claim_keys, $entry->{key} if $allowed{ $entry->{key} };
+    }
+    return \@claim_keys;
 }
 
 sub _render_error {

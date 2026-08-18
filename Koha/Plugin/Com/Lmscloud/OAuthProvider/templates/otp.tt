@@ -1,0 +1,44 @@
+[% TRY %]
+    [% PROCESS "$PLUGIN_DIR/i18n/${LANG}.inc" %]
+[% CATCH %]
+    [% PROCESS "$PLUGIN_DIR/i18n/default.inc" %]
+[% END %]
+<!DOCTYPE html>
+<html lang="[% LANG | html %]">
+<head>
+<meta charset="utf-8">
+<title>[% T.otp_title %]</title>
+<style>
+    body { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; background: #f4f6f8; margin: 0; padding: 0; }
+    .box { max-width: 380px; margin: 8vh auto; background: #fff; border-radius: 8px; padding: 2.5em; box-shadow: 0 1px 4px rgba(0,0,0,0.12); }
+    h1 { font-size: 1.2em; margin: 0 0 0.2em; }
+    p.intro { color: #555; margin-top: 0; margin-bottom: 1.5em; }
+    label { display: block; font-size: 0.9em; margin: 1em 0 0.3em; color: #333; }
+    input[type=text] { width: 100%; box-sizing: border-box; padding: 0.6em; border: 1px solid #ccc; border-radius: 4px; font-size: 1em; letter-spacing: 0.2em; }
+    button { margin-top: 1.5em; width: 100%; padding: 0.7em; border: 0; border-radius: 4px; background: #205b96; color: #fff; font-size: 1em; cursor: pointer; }
+    button:hover { background: #184573; }
+    .error { background: #fdecea; color: #a12622; border: 1px solid #f5c6cb; border-radius: 4px; padding: 0.7em 1em; font-size: 0.9em; margin-bottom: 1em; }
+</style>
+</head>
+<body>
+<div class="box">
+    <h1>[% T.otp_heading %]</h1>
+    <p class="intro">[% T.otp_intro %]</p>
+
+    [% IF error == 'invalid_otp' %]
+        <div class="error">[% T.otp_error_invalid %]</div>
+    [% END %]
+
+    <form method="post" action="[% action_path | html %]">
+        <input type="hidden" name="stage" value="otp">
+        <input type="hidden" name="ticket" value="[% ticket | html %]">
+
+        <label for="otp_token">[% T.otp_code_label %]</label>
+        <input type="text" id="otp_token" name="otp_token" inputmode="numeric" pattern="[0-9]*"
+               autocomplete="one-time-code" required autofocus>
+
+        <button type="submit">[% T.otp_submit %]</button>
+    </form>
+</div>
+</body>
+</html>

@@ -34,7 +34,7 @@
         [% END %]
     </ul>
 
-    <form method="post" action="">
+    <form method="post" action="[% action_path | html %]">
         <input type="hidden" name="stage" value="consent">
         <input type="hidden" name="ticket" value="[% ticket | html %]">
         <div class="actions">

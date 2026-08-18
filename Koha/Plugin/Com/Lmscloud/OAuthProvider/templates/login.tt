@@ -33,7 +33,7 @@
         <div class="error">[% T.login_error_missing_credentials %]</div>
     [% END %]
 
-    <form method="post" action="">
+    <form method="post" action="[% action_path | html %]">
         <input type="hidden" name="stage" value="login">
         <input type="hidden" name="client_id" value="[% client_id | html %]">
         <input type="hidden" name="redirect_uri" value="[% redirect_uri | html %]">

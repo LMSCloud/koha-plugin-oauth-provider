@@ -8,6 +8,20 @@
 [% INCLUDE 'doc-head-open.inc' %]
 <title>[% T.cfg_title | $raw %]</title>
 [% INCLUDE 'doc-head-close.inc' %]
+<style>
+    #plugins_oauthprovider_configure fieldset.rows label {
+        width: 20rem;
+    }
+    #plugins_oauthprovider_configure fieldset.rows label.radio,
+    #plugins_oauthprovider_configure fieldset.rows label.yesno,
+    #plugins_oauthprovider_configure fieldset.rows label.inline,
+    #plugins_oauthprovider_configure fieldset.rows label.error {
+        width: auto;
+    }
+    #plugins_oauthprovider_configure fieldset.rows div.hint {
+        margin-left: 21rem;
+    }
+</style>
 </head>
 <body id="plugins_oauthprovider_configure" class="plugins">
 [% INCLUDE 'html_helpers.inc' %]
@@ -52,12 +66,26 @@
                 [% T.cfg_issuer_hint_pre | $raw %]<code>[% settings.issuer_url | html %]/.well-known/openid-configuration</code>[% T.cfg_issuer_hint_post | $raw %]
               </div>
             </li>
+            <li>
+              <label for="access_token_ttl_seconds">[% T.cfg_access_ttl_label | $raw %]</label>
+              <input type="number" id="access_token_ttl_seconds" name="access_token_ttl_seconds" min="1" size="10"
+                     value="[% settings.access_token_ttl_seconds | html %]">
+              <div class="hint">[% T.cfg_access_ttl_hint | $raw %]</div>
+            </li>
+            <li>
+              <label for="refresh_token_ttl_seconds">[% T.cfg_refresh_ttl_label | $raw %]</label>
+              <input type="number" id="refresh_token_ttl_seconds" name="refresh_token_ttl_seconds" min="1" size="10"
+                     value="[% settings.refresh_token_ttl_seconds | html %]">
+              <div class="hint">[% T.cfg_refresh_ttl_hint | $raw %]</div>
+            </li>
           </ol>
         </fieldset>
         <fieldset class="action">
           <input type="submit" value="[% T.common_save | $raw %]" class="btn btn-primary">
         </fieldset>
       </form>
+
+      <h2>[% T.cfg_apps_heading | $raw %]</h2>
 
       [% IF new_secret %]
         <div class="dialog message">
@@ -71,7 +99,6 @@
         </div>
       [% END %]
 
-      <h2>[% T.cfg_apps_heading | $raw %]</h2>
       [% IF clients.size == 0 %]
         <p>[% T.cfg_no_apps | $raw %]</p>
       [% ELSE %]
@@ -83,6 +110,7 @@
               <th>[% T.cfg_th_redirect_uris | $raw %]</th>
               <th>[% T.cfg_th_claims | $raw %]</th>
               <th>[% T.cfg_th_categories | $raw %]</th>
+              <th>[% T.cfg_th_consent_mode | $raw %]</th>
               <th>[% T.cfg_th_status | $raw %]</th>
               <th>[% T.cfg_th_actions | $raw %]</th>
             </tr>
@@ -101,7 +129,10 @@
                   [% IF client.allowed_claims.size == 0 %]
                     <em>[% T.cfg_only_userid | $raw %]</em>
                   [% ELSE %]
-                    [% client.allowed_claims.join(', ') | html %]
+                    [% FOREACH claim_key IN client.allowed_claims %]
+                      [% SET claim_label_key = 'claim_label_' _ claim_key %]
+                      <div>[% T.$claim_label_key | $raw %]</div>
+                    [% END %]
                   [% END %]
                 </td>
                 <td>
@@ -111,6 +142,10 @@
                     [% IF client.allowed_categories.size %]<div>[% T.cfg_allowed_categories_label | $raw %] [% client.allowed_categories.join(', ') | html %]</div>[% END %]
                     [% IF client.denied_categories.size %]<div>[% T.cfg_denied_categories_label | $raw %] [% client.denied_categories.join(', ') | html %]</div>[% END %]
                   [% END %]
+                </td>
+                <td>
+                  [% SET consent_mode_label_key = 'cfg_consent_mode_' _ client.consent_mode %]
+                  [% T.$consent_mode_label_key | $raw %]
                 </td>
                 <td>[% IF client.is_active %][% T.cfg_status_active | $raw %][% ELSE %]<em>[% T.cfg_status_inactive | $raw %]</em>[% END %]</td>
                 <td>
@@ -153,47 +188,79 @@
                 <input type="text" id="client_name" name="client_name" size="40" value="[% edit_client.client_name | html %]" required>
               </li>
               <li>
+                <label for="is_active">[% T.cfg_active_label | $raw %]</label>
+                <input type="checkbox" id="is_active" name="is_active" value="1" [% IF edit_client.is_active %]checked[% END %]>
+              </li>
+              <li>
+                <label for="consent_mode">[% T.cfg_consent_mode_label | $raw %]</label>
+                <select id="consent_mode" name="consent_mode">
+                  [% FOREACH mode IN consent_modes %]
+                    [% SET consent_mode_label_key = 'cfg_consent_mode_' _ mode %]
+                    <option value="[% mode | html %]" [% IF edit_client.consent_mode == mode %]selected="selected"[% END %]>
+                      [% T.$consent_mode_label_key | $raw %]
+                    </option>
+                  [% END %]
+                </select>
+                <div class="hint">[% T.cfg_consent_mode_hint | $raw %]</div>
+              </li>
+              <li>
+                <label for="access_token_ttl_seconds">[% T.cfg_client_access_ttl_label | $raw %]</label>
+                <input type="number" id="access_token_ttl_seconds" name="access_token_ttl_seconds" min="1" size="10"
+                       value="[% edit_client.access_token_ttl_seconds | html %]"
+                       placeholder="[% settings.access_token_ttl_seconds | html %]">
+                <div class="hint">[% T.cfg_client_ttl_hint | $raw %]</div>
+              </li>
+              <li>
+                <label for="refresh_token_ttl_seconds">[% T.cfg_client_refresh_ttl_label | $raw %]</label>
+                <input type="number" id="refresh_token_ttl_seconds" name="refresh_token_ttl_seconds" min="1" size="10"
+                       value="[% edit_client.refresh_token_ttl_seconds | html %]"
+                       placeholder="[% settings.refresh_token_ttl_seconds | html %]">
+                <div class="hint">[% T.cfg_client_ttl_hint | $raw %]</div>
+              </li>
+              <li>
                 <label for="redirect_uris">[% T.cfg_redirect_uris_label | $raw %]</label>
                 <textarea id="redirect_uris" name="redirect_uris" rows="4" cols="60">[% edit_client.redirect_uris.join("\n") | html %]</textarea>
               </li>
               <li>
                 <label>[% T.cfg_claims_label | $raw %]</label>
-                [% FOREACH claim IN claims_catalog %]
-                  [% SET label_key = 'claim_label_' _ claim.key %]
-                  <label style="display:block;font-weight:normal">
-                    <input type="checkbox" name="allowed_claims" value="[% claim.key | html %]"
-                      [% IF edit_client.allowed_claims.grep('^' _ claim.key _ '$').size %]checked[% END %]>
-                    [% T.$label_key | $raw %]
-                  </label>
-                [% END %]
+                <div class="checkbox-list" style="margin-left:21rem">
+                  [% FOREACH claim IN claims_catalog %]
+                    [% SET label_key = 'claim_label_' _ claim.key %]
+                    <label style="display:block;float:none;width:auto;margin:0 0 .3em;text-align:left;font-weight:normal">
+                      <input type="checkbox" name="allowed_claims" value="[% claim.key | html %]"
+                        [% IF edit_client.allowed_claims.grep('^' _ claim.key _ '$').size %]checked[% END %]>
+                      [% T.$label_key | $raw %]
+                    </label>
+                  [% END %]
+                </div>
               </li>
               <li>
-                <label>[% T.cfg_allowed_categories_label | $raw %]</label>
+                <label for="allowed_categories">[% T.cfg_allowed_categories_label | $raw %]</label>
                 <div class="hint">[% T.cfg_allowed_categories_hint | $raw %]</div>
-                [% FOREACH cat IN patron_categories %]
-                  <label style="display:block;font-weight:normal">
-                    <input type="checkbox" name="allowed_categories" value="[% cat.categorycode | html %]"
-                      [% IF edit_client.allowed_categories.grep('^' _ cat.categorycode _ '$').size %]checked[% END %]>
-                    [% cat.description | html %] ([% cat.categorycode | html %])
-                  </label>
-                [% END %]
+                <div style="margin-left:21rem;max-width:40rem">
+                  <select id="allowed_categories" name="allowed_categories" multiple="multiple" class="select2" style="width:100%">
+                    [% FOREACH cat IN patron_categories %]
+                      <option value="[% cat.categorycode | html %]"
+                        [% IF edit_client.allowed_categories.grep('^' _ cat.categorycode _ '$').size %]selected="selected"[% END %]>
+                        [% cat.description | html %] ([% cat.categorycode | html %])
+                      </option>
+                    [% END %]
+                  </select>
+                </div>
               </li>
               <li>
-                <label>[% T.cfg_denied_categories_label | $raw %]</label>
+                <label for="denied_categories">[% T.cfg_denied_categories_label | $raw %]</label>
                 <div class="hint">[% T.cfg_denied_categories_hint | $raw %]</div>
-                [% FOREACH cat IN patron_categories %]
-                  <label style="display:block;font-weight:normal">
-                    <input type="checkbox" name="denied_categories" value="[% cat.categorycode | html %]"
-                      [% IF edit_client.denied_categories.grep('^' _ cat.categorycode _ '$').size %]checked[% END %]>
-                    [% cat.description | html %] ([% cat.categorycode | html %])
-                  </label>
-                [% END %]
-              </li>
-              <li>
-                <label style="display:block;font-weight:normal">
-                  <input type="checkbox" name="is_active" value="1" [% IF edit_client.is_active %]checked[% END %]>
-                  [% T.cfg_active_label | $raw %]
-                </label>
+                <div style="margin-left:21rem;max-width:40rem">
+                  <select id="denied_categories" name="denied_categories" multiple="multiple" class="select2" style="width:100%">
+                    [% FOREACH cat IN patron_categories %]
+                      <option value="[% cat.categorycode | html %]"
+                        [% IF edit_client.denied_categories.grep('^' _ cat.categorycode _ '$').size %]selected="selected"[% END %]>
+                        [% cat.description | html %] ([% cat.categorycode | html %])
+                      </option>
+                    [% END %]
+                  </select>
+                </div>
               </li>
             </ol>
           </fieldset>
@@ -215,38 +282,70 @@
                 <input type="text" id="client_name" name="client_name" size="40" required>
               </li>
               <li>
+                <label for="consent_mode">[% T.cfg_consent_mode_label | $raw %]</label>
+                <select id="consent_mode" name="consent_mode">
+                  [% FOREACH mode IN consent_modes %]
+                    [% SET consent_mode_label_key = 'cfg_consent_mode_' _ mode %]
+                    <option value="[% mode | html %]">
+                      [% T.$consent_mode_label_key | $raw %]
+                    </option>
+                  [% END %]
+                </select>
+                <div class="hint">[% T.cfg_consent_mode_hint | $raw %]</div>
+              </li>
+              <li>
+                <label for="access_token_ttl_seconds">[% T.cfg_client_access_ttl_label | $raw %]</label>
+                <input type="number" id="access_token_ttl_seconds" name="access_token_ttl_seconds" min="1" size="10"
+                       placeholder="[% settings.access_token_ttl_seconds | html %]">
+                <div class="hint">[% T.cfg_client_ttl_hint | $raw %]</div>
+              </li>
+              <li>
+                <label for="refresh_token_ttl_seconds">[% T.cfg_client_refresh_ttl_label | $raw %]</label>
+                <input type="number" id="refresh_token_ttl_seconds" name="refresh_token_ttl_seconds" min="1" size="10"
+                       placeholder="[% settings.refresh_token_ttl_seconds | html %]">
+                <div class="hint">[% T.cfg_client_ttl_hint | $raw %]</div>
+              </li>
+              <li>
                 <label for="redirect_uris">[% T.cfg_redirect_uris_label | $raw %]</label>
                 <textarea id="redirect_uris" name="redirect_uris" rows="4" cols="60" placeholder="https://app.example.org/oauth/callback"></textarea>
               </li>
               <li>
                 <label>[% T.cfg_claims_label | $raw %]</label>
-                [% FOREACH claim IN claims_catalog %]
-                  [% SET label_key = 'claim_label_' _ claim.key %]
-                  <label style="display:block;font-weight:normal">
-                    <input type="checkbox" name="allowed_claims" value="[% claim.key | html %]">
-                    [% T.$label_key | $raw %]
-                  </label>
-                [% END %]
+                <div class="checkbox-list" style="margin-left:21rem">
+                  [% FOREACH claim IN claims_catalog %]
+                    [% SET label_key = 'claim_label_' _ claim.key %]
+                    <label style="display:block;float:none;width:auto;margin:0 0 .3em;text-align:left;font-weight:normal">
+                      <input type="checkbox" name="allowed_claims" value="[% claim.key | html %]">
+                      [% T.$label_key | $raw %]
+                    </label>
+                  [% END %]
+                </div>
               </li>
               <li>
-                <label>[% T.cfg_allowed_categories_label | $raw %]</label>
+                <label for="allowed_categories">[% T.cfg_allowed_categories_label | $raw %]</label>
                 <div class="hint">[% T.cfg_allowed_categories_hint | $raw %]</div>
-                [% FOREACH cat IN patron_categories %]
-                  <label style="display:block;font-weight:normal">
-                    <input type="checkbox" name="allowed_categories" value="[% cat.categorycode | html %]">
-                    [% cat.description | html %] ([% cat.categorycode | html %])
-                  </label>
-                [% END %]
+                <div style="margin-left:21rem;max-width:40rem">
+                  <select id="allowed_categories" name="allowed_categories" multiple="multiple" class="select2" style="width:100%">
+                    [% FOREACH cat IN patron_categories %]
+                      <option value="[% cat.categorycode | html %]">
+                        [% cat.description | html %] ([% cat.categorycode | html %])
+                      </option>
+                    [% END %]
+                  </select>
+                </div>
               </li>
               <li>
-                <label>[% T.cfg_denied_categories_label | $raw %]</label>
+                <label for="denied_categories">[% T.cfg_denied_categories_label | $raw %]</label>
                 <div class="hint">[% T.cfg_denied_categories_hint | $raw %]</div>
-                [% FOREACH cat IN patron_categories %]
-                  <label style="display:block;font-weight:normal">
-                    <input type="checkbox" name="denied_categories" value="[% cat.categorycode | html %]">
-                    [% cat.description | html %] ([% cat.categorycode | html %])
-                  </label>
-                [% END %]
+                <div style="margin-left:21rem;max-width:40rem">
+                  <select id="denied_categories" name="denied_categories" multiple="multiple" class="select2" style="width:100%">
+                    [% FOREACH cat IN patron_categories %]
+                      <option value="[% cat.categorycode | html %]">
+                        [% cat.description | html %] ([% cat.categorycode | html %])
+                      </option>
+                    [% END %]
+                  </select>
+                </div>
               </li>
             </ol>
           </fieldset>
@@ -260,4 +359,5 @@
   </div>
 </div>
 
+[% INCLUDE 'select2.inc' %]
 [% INCLUDE 'intranet-bottom.inc' %]

@@ -52,7 +52,7 @@ sub _random_token {
     return Koha::Token->new->generate( { pattern => sprintf( $SAFE_TOKEN_PATTERN, $length ) } );
 }
 
-our $VERSION = '1.2.0';
+our $VERSION = '1.4.0';
 
 our $metadata = {
     name            => 'OAuth2 / OpenID Connect Identity Provider',
@@ -135,6 +135,9 @@ sub install {
             allowed_claims      TEXT NOT NULL,
             allowed_categories  TEXT NULL,
             denied_categories   TEXT NULL,
+            consent_mode        VARCHAR(20) NOT NULL DEFAULT 'always',
+            access_token_ttl_seconds  INT(11) NULL,
+            refresh_token_ttl_seconds INT(11) NULL,
             is_active           TINYINT(1) NOT NULL DEFAULT 1,
             created_on          DATETIME NOT NULL,
             updated_on          DATETIME NOT NULL,
@@ -183,6 +186,20 @@ sub install {
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     });
 
+    my $consents_table = $self->_consents_table;
+    $dbh->do(qq{
+        CREATE TABLE IF NOT EXISTS $consents_table (
+            id              INT(11) NOT NULL AUTO_INCREMENT,
+            client_id       VARCHAR(64) NOT NULL,
+            borrowernumber  INT(11) NOT NULL,
+            granted_claims  TEXT NOT NULL,
+            granted_on      DATETIME NOT NULL,
+            updated_on      DATETIME NOT NULL,
+            PRIMARY KEY (id),
+            UNIQUE KEY client_patron_idx (client_id, borrowernumber)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    });
+
     # One-time secret used to sign the short-lived login->consent ticket.
     # Not shown/exported anywhere; internal use only.
     unless ( $self->retrieve_data('ticket_secret') ) {
@@ -216,6 +233,31 @@ sub upgrade {
     $dbh->do("ALTER TABLE $clients_table ADD COLUMN IF NOT EXISTS allowed_categories TEXT NULL");
     $dbh->do("ALTER TABLE $clients_table ADD COLUMN IF NOT EXISTS denied_categories TEXT NULL");
 
+    # 1.3.0: per-client consent mode ('always' / 'remember' / 'never') plus a
+    # table remembering which claims a patron already consented to release
+    # to a given client, for 'remember' mode.
+    $dbh->do("ALTER TABLE $clients_table ADD COLUMN IF NOT EXISTS consent_mode VARCHAR(20) NOT NULL DEFAULT 'always'");
+
+    my $consents_table = $self->_consents_table;
+    $dbh->do(qq{
+        CREATE TABLE IF NOT EXISTS $consents_table (
+            id              INT(11) NOT NULL AUTO_INCREMENT,
+            client_id       VARCHAR(64) NOT NULL,
+            borrowernumber  INT(11) NOT NULL,
+            granted_claims  TEXT NOT NULL,
+            granted_on      DATETIME NOT NULL,
+            updated_on      DATETIME NOT NULL,
+            PRIMARY KEY (id),
+            UNIQUE KEY client_patron_idx (client_id, borrowernumber)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    });
+
+    # 1.4.0: optional per-client override of the (otherwise plugin-wide)
+    # access/refresh token lifetimes. NULL means "use the plugin's global
+    # setting" - see OAuthProvider::effective_ttls.
+    $dbh->do("ALTER TABLE $clients_table ADD COLUMN IF NOT EXISTS access_token_ttl_seconds INT(11) NULL");
+    $dbh->do("ALTER TABLE $clients_table ADD COLUMN IF NOT EXISTS refresh_token_ttl_seconds INT(11) NULL");
+
     return 1;
 }
 
@@ -225,6 +267,7 @@ sub uninstall {
 
     $dbh->do( 'DROP TABLE IF EXISTS ' . $self->_tokens_table );
     $dbh->do( 'DROP TABLE IF EXISTS ' . $self->_codes_table );
+    $dbh->do( 'DROP TABLE IF EXISTS ' . $self->_consents_table );
     $dbh->do( 'DROP TABLE IF EXISTS ' . $self->_clients_table );
 
     return 1;
@@ -259,9 +302,10 @@ sub _ticket_secret {
 
 # =========================== table name helpers ==============================
 
-sub _clients_table { return $_[0]->get_qualified_table_name('clients'); }
-sub _codes_table   { return $_[0]->get_qualified_table_name('authorization_codes'); }
-sub _tokens_table  { return $_[0]->get_qualified_table_name('tokens'); }
+sub _clients_table  { return $_[0]->get_qualified_table_name('clients'); }
+sub _codes_table    { return $_[0]->get_qualified_table_name('authorization_codes'); }
+sub _tokens_table   { return $_[0]->get_qualified_table_name('tokens'); }
+sub _consents_table { return $_[0]->get_qualified_table_name('consents'); }
 
 # =========================== client CRUD ==============================
 
@@ -328,8 +372,8 @@ sub create_client {
     my $table = $self->_clients_table;
     $dbh->do(
         "INSERT INTO $table
-            (client_id, client_secret_hash, client_name, redirect_uris, allowed_claims, allowed_categories, denied_categories, is_active, created_on, updated_on)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())",
+            (client_id, client_secret_hash, client_name, redirect_uris, allowed_claims, allowed_categories, denied_categories, consent_mode, access_token_ttl_seconds, refresh_token_ttl_seconds, is_active, created_on, updated_on)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())",
         undef,
         $client_id,
         $secret_hash,
@@ -338,6 +382,9 @@ sub create_client {
         encode_json( $self->_sanitize_claims( $args->{allowed_claims} ) ),
         encode_json( $self->_sanitize_categories( $args->{allowed_categories} ) ),
         encode_json( $self->_sanitize_categories( $args->{denied_categories} ) ),
+        $self->_sanitize_consent_mode( $args->{consent_mode} ),
+        $self->_sanitize_ttl_override( $args->{access_token_ttl_seconds} ),
+        $self->_sanitize_ttl_override( $args->{refresh_token_ttl_seconds} ),
         $args->{is_active} ? 1 : 0,
     );
 
@@ -351,7 +398,7 @@ sub update_client {
     my $table = $self->_clients_table;
     $dbh->do(
         "UPDATE $table
-            SET client_name = ?, redirect_uris = ?, allowed_claims = ?, allowed_categories = ?, denied_categories = ?, is_active = ?, updated_on = NOW()
+            SET client_name = ?, redirect_uris = ?, allowed_claims = ?, allowed_categories = ?, denied_categories = ?, consent_mode = ?, access_token_ttl_seconds = ?, refresh_token_ttl_seconds = ?, is_active = ?, updated_on = NOW()
          WHERE id = ?",
         undef,
         $args->{client_name},
@@ -359,6 +406,9 @@ sub update_client {
         encode_json( $self->_sanitize_claims( $args->{allowed_claims} ) ),
         encode_json( $self->_sanitize_categories( $args->{allowed_categories} ) ),
         encode_json( $self->_sanitize_categories( $args->{denied_categories} ) ),
+        $self->_sanitize_consent_mode( $args->{consent_mode} ),
+        $self->_sanitize_ttl_override( $args->{access_token_ttl_seconds} ),
+        $self->_sanitize_ttl_override( $args->{refresh_token_ttl_seconds} ),
         $args->{is_active} ? 1 : 0,
         $id,
     );
@@ -374,6 +424,7 @@ sub delete_client {
     my $dbh = C4::Context->dbh;
     $dbh->do( "DELETE FROM " . $self->_tokens_table . " WHERE client_id = ?",       undef, $client->{client_id} );
     $dbh->do( "DELETE FROM " . $self->_codes_table  . " WHERE client_id = ?",       undef, $client->{client_id} );
+    $dbh->do( "DELETE FROM " . $self->_consents_table . " WHERE client_id = ?",     undef, $client->{client_id} );
     $dbh->do( "DELETE FROM " . $self->_clients_table . " WHERE id = ?",              undef, $id );
 
     return 1;
@@ -406,6 +457,43 @@ sub _sanitize_claims {
     my ( $self, $claims ) = @_;
     $claims ||= [];
     return [ grep { Koha::Plugin::Com::Lmscloud::OAuthProvider::ClaimsCatalog->is_valid_key($_) } @$claims ];
+}
+
+# Valid values, in the order shown in the admin UI.
+my @CONSENT_MODES = ( 'always', 'remember', 'never' );
+
+sub consent_modes { return [@CONSENT_MODES] }
+
+sub _sanitize_consent_mode {
+    my ( $self, $mode ) = @_;
+    return 'always' unless defined $mode && grep { $_ eq $mode } @CONSENT_MODES;
+    return $mode;
+}
+
+# Per-client access/refresh token lifetime override, in seconds. undef/blank
+# means "no override" (NULL in the DB, falls back to the plugin's global
+# setting - see effective_ttls). Anything that isn't a positive integer is
+# treated the same way, rather than storing garbage.
+sub _sanitize_ttl_override {
+    my ( $self, $value ) = @_;
+    return undef unless defined $value && length $value;
+    return undef unless $value =~ /^[0-9]+$/ && $value > 0;
+    return $value + 0;
+}
+
+# Resolves the access/refresh token TTLs that actually apply for a given
+# client: its own override if set, otherwise the plugin-wide default.
+# $client may be undef (falls back to the global settings entirely).
+sub effective_ttls {
+    my ( $self, $client ) = @_;
+
+    my $settings = $self->settings;
+    my $access_ttl  = $client && defined $client->{access_token_ttl_seconds}
+        ? $client->{access_token_ttl_seconds}  : $settings->{access_token_ttl_seconds};
+    my $refresh_ttl = $client && defined $client->{refresh_token_ttl_seconds}
+        ? $client->{refresh_token_ttl_seconds} : $settings->{refresh_token_ttl_seconds};
+
+    return ( $access_ttl, $refresh_ttl );
 }
 
 # Keeps only category codes that actually exist, so a hand-crafted POST
@@ -521,16 +609,80 @@ sub consume_authorization_code {
     return $row;
 }
 
+# =========================== remembered consent (consent_mode 'remember') ===
+#
+# One row per (client, patron), recording the full set of claim keys the
+# patron has already agreed to release to that client. A later login only
+# skips the consent screen if the claims currently on offer (per the
+# client's *current* allowed_claims) are already covered by that stored
+# set - so a patron is asked again the moment an admin grants a client
+# access to additional data, but never merely because the admin removed
+# some.
+
+sub get_remembered_consent {
+    my ( $self, $client_id, $borrowernumber ) = @_;
+
+    my $dbh = C4::Context->dbh;
+    my $row = $dbh->selectrow_hashref(
+        "SELECT * FROM " . $self->_consents_table . " WHERE client_id = ? AND borrowernumber = ?",
+        { Slice => {} }, $client_id, $borrowernumber,
+    );
+    return unless $row;
+    $row->{granted_claims} = decode_json( $row->{granted_claims} );
+    return $row;
+}
+
+# True if every claim key in $claim_keys was already granted in a previously
+# remembered consent for this (client, patron) pair.
+sub consent_covers {
+    my ( $self, $client_id, $borrowernumber, $claim_keys ) = @_;
+
+    my $remembered = $self->get_remembered_consent( $client_id, $borrowernumber ) or return 0;
+    my %granted = map { $_ => 1 } @{ $remembered->{granted_claims} };
+    return !grep { !$granted{$_} } @{ $claim_keys || [] };
+}
+
+sub remember_consent {
+    my ( $self, $client_id, $borrowernumber, $claim_keys ) = @_;
+
+    my $dbh   = C4::Context->dbh;
+    my $table = $self->_consents_table;
+    $dbh->do(
+        "INSERT INTO $table (client_id, borrowernumber, granted_claims, granted_on, updated_on)
+         VALUES (?, ?, ?, NOW(), NOW())
+         ON DUPLICATE KEY UPDATE granted_claims = VALUES(granted_claims), updated_on = NOW()",
+        undef, $client_id, $borrowernumber, encode_json( $claim_keys || [] ),
+    );
+
+    return 1;
+}
+
+sub forget_consent {
+    my ( $self, $client_id, $borrowernumber ) = @_;
+
+    my $dbh = C4::Context->dbh;
+    $dbh->do( "DELETE FROM " . $self->_consents_table . " WHERE client_id = ? AND borrowernumber = ?",
+        undef, $client_id, $borrowernumber );
+
+    return 1;
+}
+
 # =========================== access / refresh tokens ==============================
 
 # Returns ($access_token, $refresh_token, $access_ttl_seconds). $scope is
 # stored on both tokens purely so a later refresh-token exchange can tell
 # whether the original grant included 'openid' (and should reissue an
-# id_token too) - it is not otherwise interpreted.
+# id_token too) - it is not otherwise interpreted. $access_ttl/$refresh_ttl
+# are optional; callers pass the result of effective_ttls($client) so a
+# per-client override (or lack of one) is respected - falls back to the
+# plugin-wide defaults itself if omitted.
 sub issue_token_pair {
-    my ( $self, $client_id, $borrowernumber, $scope ) = @_;
+    my ( $self, $client_id, $borrowernumber, $scope, $access_ttl, $refresh_ttl ) = @_;
 
     my $settings = $self->settings;
+    $access_ttl  //= $settings->{access_token_ttl_seconds};
+    $refresh_ttl //= $settings->{refresh_token_ttl_seconds};
+
     my $access_token  = _random_token(64);
     my $refresh_token = _random_token(64);
 
@@ -539,15 +691,15 @@ sub issue_token_pair {
     $dbh->do(
         "INSERT INTO $table (token_hash, token_type, client_id, borrowernumber, scope, expires_on, revoked, created_on)
          VALUES (?, 'access', ?, ?, ?, DATE_ADD(NOW(), INTERVAL ? SECOND), 0, NOW())",
-        undef, sha256_hex($access_token), $client_id, $borrowernumber, $scope, $settings->{access_token_ttl_seconds},
+        undef, sha256_hex($access_token), $client_id, $borrowernumber, $scope, $access_ttl,
     );
     $dbh->do(
         "INSERT INTO $table (token_hash, token_type, client_id, borrowernumber, scope, expires_on, revoked, created_on)
          VALUES (?, 'refresh', ?, ?, ?, DATE_ADD(NOW(), INTERVAL ? SECOND), 0, NOW())",
-        undef, sha256_hex($refresh_token), $client_id, $borrowernumber, $scope, $settings->{refresh_token_ttl_seconds},
+        undef, sha256_hex($refresh_token), $client_id, $borrowernumber, $scope, $refresh_ttl,
     );
 
-    return ( $access_token, $refresh_token, $settings->{access_token_ttl_seconds} );
+    return ( $access_token, $refresh_token, $access_ttl );
 }
 
 # Returns the token row (with token_type 'access') if valid, else undef.
@@ -581,8 +733,9 @@ sub rotate_refresh_token {
 
     $dbh->do( "UPDATE $table SET revoked = 1 WHERE id = ?", undef, $row->{id} );
 
+    my ( $access_ttl, $refresh_ttl ) = $self->effective_ttls( $self->get_client($client_id) );
     my ( $access_token, $refresh_token, $ttl ) =
-        $self->issue_token_pair( $client_id, $row->{borrowernumber}, $row->{scope} );
+        $self->issue_token_pair( $client_id, $row->{borrowernumber}, $row->{scope}, $access_ttl, $refresh_ttl );
     return ( $access_token, $refresh_token, $ttl, $row->{scope}, $row->{borrowernumber} );
 }
 
@@ -639,12 +792,18 @@ sub issue_id_token {
     my $issuer = $self->settings->{issuer_url};
     my $now    = time();
 
+    # exp mirrors the *actual* access token's lifetime, not the plugin-wide
+    # default - callers pass access_ttl explicitly (the same value used to
+    # issue the access token itself, see effective_ttls) since a client may
+    # override it; falls back to the global default only if omitted.
+    my $access_ttl = $args{access_ttl} // $self->settings->{access_token_ttl_seconds};
+
     my %claims = (
         iss => $issuer,
         sub => "$args{borrowernumber}",
         aud => $args{client_id},
         iat => $now,
-        exp => $now + $self->settings->{access_token_ttl_seconds},
+        exp => $now + $access_ttl,
         amr => ['pwd'],
     );
     $claims{nonce} = $args{nonce} if defined $args{nonce} && length $args{nonce};
@@ -783,6 +942,9 @@ sub configure {
                 allowed_claims     => [ _multi_param( $cgi, 'allowed_claims' ) ],
                 allowed_categories => [ _multi_param( $cgi, 'allowed_categories' ) ],
                 denied_categories  => [ _multi_param( $cgi, 'denied_categories' ) ],
+                consent_mode       => scalar $cgi->param('consent_mode'),
+                access_token_ttl_seconds  => scalar $cgi->param('access_token_ttl_seconds'),
+                refresh_token_ttl_seconds => scalar $cgi->param('refresh_token_ttl_seconds'),
                 is_active          => 1,
             }
         );
@@ -796,6 +958,9 @@ sub configure {
                 allowed_claims     => [ _multi_param( $cgi, 'allowed_claims' ) ],
                 allowed_categories => [ _multi_param( $cgi, 'allowed_categories' ) ],
                 denied_categories  => [ _multi_param( $cgi, 'denied_categories' ) ],
+                consent_mode       => scalar $cgi->param('consent_mode'),
+                access_token_ttl_seconds  => scalar $cgi->param('access_token_ttl_seconds'),
+                refresh_token_ttl_seconds => scalar $cgi->param('refresh_token_ttl_seconds'),
                 is_active          => $cgi->param('is_active') ? 1 : 0,
             }
         );
@@ -811,7 +976,19 @@ sub configure {
     elsif ( $action eq 'save_settings' ) {
         my $issuer_url = scalar $cgi->param('issuer_url') // '';
         $issuer_url =~ s{/+$}{};    # strip trailing slash - endpoints are built as "$issuer/authorize" etc.
-        $self->save_settings( { issuer_url => $issuer_url } );
+
+        my $current = $self->settings;
+        my $access_ttl  = $self->_sanitize_ttl_override( scalar $cgi->param('access_token_ttl_seconds') )
+            // $current->{access_token_ttl_seconds};
+        my $refresh_ttl = $self->_sanitize_ttl_override( scalar $cgi->param('refresh_token_ttl_seconds') )
+            // $current->{refresh_token_ttl_seconds};
+
+        $self->save_settings(
+            {   issuer_url                => $issuer_url,
+                access_token_ttl_seconds  => $access_ttl,
+                refresh_token_ttl_seconds => $refresh_ttl,
+            }
+        );
     }
 
     print $cgi->redirect(
@@ -833,6 +1010,7 @@ sub _render_configure {
     $template->param(
         clients          => $self->list_clients,
         claims_catalog   => Koha::Plugin::Com::Lmscloud::OAuthProvider::ClaimsCatalog->catalog,
+        consent_modes    => $self->consent_modes,
         patron_categories => \@categories,
         settings         => $self->settings,
         base_url         => C4::Context->preference('staffClientBaseURL') || '',

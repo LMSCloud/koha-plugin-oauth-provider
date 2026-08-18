@@ -36,6 +36,7 @@
                 { "name": "nonce", "in": "formData", "required": false, "type": "string" },
                 { "name": "userid", "in": "formData", "required": false, "type": "string" },
                 { "name": "password", "in": "formData", "required": false, "type": "string" },
+                { "name": "otp_token", "in": "formData", "required": false, "type": "string" },
                 { "name": "ticket", "in": "formData", "required": false, "type": "string" },
                 { "name": "consent", "in": "formData", "required": false, "type": "string" }
             ],
@@ -71,6 +72,7 @@
     "/userinfo": {
         "get": {
             "x-mojo-to": "Com::Lmscloud::OAuthProvider::Controller#userinfo",
+            "x-plugin-owns-auth": true,
             "operationId": "oauthProviderUserinfo",
             "tags": ["oauthprovider"],
             "produces": ["application/json"],

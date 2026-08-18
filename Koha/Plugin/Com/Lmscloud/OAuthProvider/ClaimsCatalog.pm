@@ -25,6 +25,7 @@ our @CATALOG = (
     { key => 'categorycode' },
     { key => 'category_description' },
     { key => 'dateexpiry' },
+    { key => 'dateofbirth' },
     { key => 'age' },
     { key => 'address' },
     { key => 'email_verified' },
@@ -45,6 +46,9 @@ my %ACCESSOR_OF = (
     categorycode         => sub { $_[0]->categorycode },
     category_description => sub { $_[0]->category ? $_[0]->category->description : undef },
     dateexpiry           => sub { $_[0]->dateexpiry },
+    # Koha stores this as a plain 'YYYY-MM-DD' string (no DateTime
+    # inflation on this column), i.e. already ISO 8601 as-is.
+    dateofbirth           => sub { $_[0]->dateofbirth },
     # Koha::Patron::get_age() returns years as of today, computed from
     # dateofbirth; undef if no dateofbirth is on file.
     age                   => sub { $_[0]->get_age },
