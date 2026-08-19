@@ -7,7 +7,6 @@ package Koha::Plugin::Com::Lmscloud::OAuthProvider::ClaimsCatalog;
 use Modern::Perl;
 
 use C4::Context;
-use Mojo::JSON qw(false);
 
 # Order here is the order shown in the admin UI and in userinfo responses.
 # No display labels here on purpose: templates look up a translated label
@@ -28,9 +27,11 @@ our @CATALOG = (
     { key => 'dateofbirth' },
     { key => 'age' },
     { key => 'address' },
-    { key => 'email_verified' },
     { key => 'phone_number' },
-    { key => 'phone_number_verified' },
+    { key => 'mobile' },
+    { key => 'sex' },
+    { key => 'flags' },
+    { key => 'lang' },
     { key => 'fsk' },
     { key => 'status' },
 );
@@ -57,18 +58,17 @@ my %ACCESSOR_OF = (
     # deliberately not the alternate/"B_" address Koha also has, since
     # OIDC's address claim models a single address, not two.
     address               => sub { _format_address( $_[0] ) },
-    # Koha has no concept of email/phone verification at all (no "verified"
-    # column anywhere on the borrowers table) - these two are hardcoded to
-    # the JSON boolean false (via Mojo::JSON, matching the Mojolicious
-    # controller that ultimately renders this hash) rather than omitted,
-    # since "not verified" is an honest, spec-compliant answer for a system
-    # that plainly never verifies either.
-    email_verified        => sub { false },
     # Koha's primary phone number field ("phone" on the borrowers table) -
-    # not "mobile" or "phonepro". Change this accessor if a client actually
-    # needs the mobile number instead.
+    # not "mobile" or "phonepro".
     phone_number          => sub { $_[0]->phone },
-    phone_number_verified => sub { false },
+    mobile                => sub { $_[0]->mobile },
+    sex                   => sub { $_[0]->sex },
+    # The patron's own raw userflags bitmask on *this* (the IdP) Koha - not
+    # to be confused with granting permissions on the relying party; this
+    # just exposes what access level the patron already has here, should a
+    # client want it.
+    flags                 => sub { $_[0]->flags },
+    lang                  => sub { $_[0]->lang },
     # 'fsk' and 'status' replicate what opac/opac-divibib-auth.pl returns to
     # the German "Onleihe" (divibib GmbH) service - see _patron_status()
     # below. Deliberately NOT calling C4::External::DivibibPatronStatus: that
@@ -190,36 +190,70 @@ sub catalog {
     return \@CATALOG;
 }
 
-# Builds the userinfo claim set for a patron, given the extra claim keys a
-# client is allowed to receive. 'userid' is always included (the original,
-# OAuth2-era default). 'sub' is always included too: unlike 'userid' (which
-# staff can rename), it is the patron's immutable borrowernumber, matching
-# the id_token's 'sub' claim as OIDC requires - stringified, since OIDC
-# mandates sub be a StringOrURI, not a JSON number.
+# Returns a patron's extended-attribute value(s) for one attribute type
+# code, or undef if none are on file. A single-valued (non-repeatable)
+# attribute type yields a plain scalar; a repeatable one yields an arrayref
+# of all its values, in whatever order Koha returns them.
+sub _attribute_value {
+    my ( $patron, $code ) = @_;
+
+    my @values = map { $_->attribute } $patron->extended_attributes->search( { code => $code } )->as_list;
+    return undef unless @values;
+    return @values == 1 ? $values[0] : \@values;
+}
+
+# Builds the userinfo claim set for a patron, given a client's configured
+# claim list. Each entry is a hashref:
+#   { type => 'field',     source => <catalog key>,        claim_name => <output key> }
+#   { type => 'attribute', source => <attribute type code>, claim_name => <output key> }
+#   { type => 'static',    value  => <literal string>,      claim_name => <output key> }
+# (see OAuthProvider::_sanitize_claim_configs for where these are validated
+# and deduplicated by claim_name before ever reaching here).
 #
+# 'userid' is always included (the original, OAuth2-era default). 'sub' is
+# always included too: unlike 'userid' (which staff can rename), it is the
+# patron's immutable borrowernumber, matching the id_token's 'sub' claim as
+# OIDC requires - stringified, since OIDC mandates sub be a StringOrURI, not
+# a JSON number.
 sub build_claims {
-    my ( $class, $patron, $allowed_claims ) = @_;
+    my ( $class, $patron, $claim_configs ) = @_;
 
     my %claims = (
         userid => $patron->userid,
         sub    => "" . $patron->borrowernumber,
     );
 
-    my %requested = map { $_ => 1 } @{ $allowed_claims || [] };
+    $claim_configs ||= [];
 
     # 'fsk'/'status' share one underlying computation (several DB lookups:
-    # account charges, overdues, debarred/expired) - run it at most once
-    # per build_claims() call, however many of the two are requested.
-    if ( $requested{fsk} || $requested{status} ) {
-        my $patron_status = _patron_status($patron);
-        $claims{fsk}    = $patron_status->{fsk} + 0    if $requested{fsk};
-        $claims{status} = $patron_status->{status} + 0 if $requested{status};
-    }
+    # account charges, overdues, debarred/expired) - computed at most once
+    # per build_claims() call, however many claim entries request either.
+    my $patron_status;
+    my $wants_patron_status = grep { $_->{type} eq 'field' && ( $_->{source} eq 'fsk' || $_->{source} eq 'status' ) }
+        @$claim_configs;
+    $patron_status = _patron_status($patron) if $wants_patron_status;
 
-    for my $key ( @{ $allowed_claims || [] } ) {
-        next if $key eq 'fsk' || $key eq 'status';    # handled above
-        next unless exists $ACCESSOR_OF{$key};
-        $claims{$key} = $ACCESSOR_OF{$key}->($patron);
+    for my $entry (@$claim_configs) {
+        my $claim_name = $entry->{claim_name};
+        next unless defined $claim_name && length $claim_name;
+
+        if ( $entry->{type} eq 'static' ) {
+            $claims{$claim_name} = $entry->{value};
+        }
+        elsif ( $entry->{type} eq 'attribute' ) {
+            $claims{$claim_name} = _attribute_value( $patron, $entry->{source} );
+        }
+        elsif ( $entry->{type} eq 'field' && exists $ACCESSOR_OF{ $entry->{source} } ) {
+            if ( $entry->{source} eq 'fsk' ) {
+                $claims{$claim_name} = $patron_status->{fsk} + 0;
+            }
+            elsif ( $entry->{source} eq 'status' ) {
+                $claims{$claim_name} = $patron_status->{status} + 0;
+            }
+            else {
+                $claims{$claim_name} = $ACCESSOR_OF{ $entry->{source} }->($patron);
+            }
+        }
     }
 
     return \%claims;

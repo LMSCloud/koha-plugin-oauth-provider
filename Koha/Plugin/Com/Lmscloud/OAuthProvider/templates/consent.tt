@@ -28,9 +28,8 @@
     <h1>[% T.consent_heading_pre %][% client_name | html %][% T.consent_heading_post %]</h1>
     <p>[% T.consent_intro %]</p>
     <ul>
-        [% FOREACH key IN claim_keys %]
-            [% SET label_key = 'claim_label_' _ key %]
-            <li>[% T.$label_key %]</li>
+        [% FOREACH row IN consent_rows %]
+            <li>[% IF row.label_key %][% T.$row.label_key %][% ELSE %][% row.label_literal | html %][% END %]</li>
         [% END %]
     </ul>
 

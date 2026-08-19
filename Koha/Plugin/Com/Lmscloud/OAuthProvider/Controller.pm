@@ -11,6 +11,7 @@ use Digest::SHA qw(sha256);
 use MIME::Base64 qw(decode_base64 encode_base64url);
 
 use Koha::Auth::TwoFactorAuth;
+use Koha::Patron::Attribute::Types;
 use Koha::Patrons;
 
 # Mojolicious autoloads this controller purely off the x-mojo-to string in
@@ -233,7 +234,7 @@ sub _proceed_after_authentication {
     # OAuthProvider::consent_covers) - so widening a client's allowed_claims
     # later makes patrons see the consent screen again, on the very first
     # login after that change.
-    my $claim_keys = _claim_keys_for_client($client);
+    my $claim_keys = _claim_names_for_client($client);
     if (   $client->{consent_mode} eq 'never'
         || ( $client->{consent_mode} eq 'remember'
             && $plugin->consent_covers( $client_id, $patron->borrowernumber, $claim_keys ) ) )
@@ -284,7 +285,7 @@ sub _handle_consent {
     my $client = $plugin->get_client( $claims->{client_id} );
     if ( $client && $client->{consent_mode} eq 'remember' ) {
         $plugin->remember_consent(
-            $claims->{client_id}, $claims->{borrowernumber}, _claim_keys_for_client($client) );
+            $claims->{client_id}, $claims->{borrowernumber}, _claim_names_for_client($client) );
     }
 
     my $code = $plugin->create_authorization_code(
@@ -587,30 +588,51 @@ sub _render_consent {
     my $lang = $plugin->detect_public_language($c);
     my $html = $plugin->render_standalone_template(
         'consent.tt',
-        {   client_name => $client->{client_name},
-            claim_keys  => _claim_keys_for_client($client),
-            ticket      => $ctx->{ticket},
-            action_path => $c->url_for('current'),
+        {   client_name  => $client->{client_name},
+            consent_rows => _consent_rows_for_client($client),
+            ticket       => $ctx->{ticket},
+            action_path  => $c->url_for('current'),
         },
         $lang
     );
     return $c->render( text => $html, format => 'html' );
 }
 
-# 'userid' first (always released, not part of the catalog), then whichever
-# catalog keys this client is allowed. The template looks up the translated
-# label for each key itself (translation key "claim_label_<key>") - no
-# display text is built here. Shared between rendering the consent screen
-# and deciding/recording what a patron has consented to.
-sub _claim_keys_for_client {
+# The flat list of output claim names (the actual /userinfo keys) this
+# client currently releases - 'userid' first (always released, not part of
+# the configurable claim list), then each configured claim's own
+# admin-chosen claim_name. Used for consent_covers()/remember_consent()
+# comparisons, where only the *names* matter, not how each is sourced.
+sub _claim_names_for_client {
+    my ($client) = @_;
+    return [ 'userid', map { $_->{claim_name} } @{ $client->{allowed_claims} || [] } ];
+}
+
+# Per-claim display rows for the consent screen: {claim_name, label_key} for
+# a translated label (field-sourced claims, incl. the always-present
+# 'userid'), or {claim_name, label_literal} for a plain-text label (extended
+# attributes use their own Koha-configured description; fixed-value claims
+# have no natural human label beyond their own claim name).
+sub _consent_rows_for_client {
     my ($client) = @_;
 
-    my %allowed = map { $_ => 1 } @{ $client->{allowed_claims} };
-    my @claim_keys = ('userid');
-    for my $entry ( @{ Koha::Plugin::Com::Lmscloud::OAuthProvider::ClaimsCatalog->catalog } ) {
-        push @claim_keys, $entry->{key} if $allowed{ $entry->{key} };
+    my @rows = ( { claim_name => 'userid', label_key => 'claim_label_userid' } );
+    for my $entry ( @{ $client->{allowed_claims} || [] } ) {
+        if ( $entry->{type} eq 'field' ) {
+            push @rows, { claim_name => $entry->{claim_name}, label_key => 'claim_label_' . $entry->{source} };
+        }
+        elsif ( $entry->{type} eq 'attribute' ) {
+            my $attribute_type = Koha::Patron::Attribute::Types->find( $entry->{source} );
+            push @rows,
+                {   claim_name    => $entry->{claim_name},
+                    label_literal => $attribute_type ? $attribute_type->description : $entry->{source},
+                };
+        }
+        else {    # 'static'
+            push @rows, { claim_name => $entry->{claim_name}, label_literal => $entry->{claim_name} };
+        }
     }
-    return \@claim_keys;
+    return \@rows;
 }
 
 sub _render_error {

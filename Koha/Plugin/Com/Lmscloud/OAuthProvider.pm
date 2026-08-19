@@ -36,6 +36,7 @@ use URI::Escape qw(uri_escape);
 use UUID;
 
 use Koha::AuthUtils;
+use Koha::Patron::Attribute::Types;
 use Koha::Patron::Categories;
 use Koha::Token;
 use Koha::Plugin::Com::Lmscloud::OAuthProvider::ClaimsCatalog;
@@ -52,7 +53,7 @@ sub _random_token {
     return Koha::Token->new->generate( { pattern => sprintf( $SAFE_TOKEN_PATTERN, $length ) } );
 }
 
-our $VERSION = '1.4.0';
+our $VERSION = '1.5.0';
 
 our $metadata = {
     name            => 'OAuth2 / OpenID Connect Identity Provider',
@@ -258,6 +259,27 @@ sub upgrade {
     $dbh->do("ALTER TABLE $clients_table ADD COLUMN IF NOT EXISTS access_token_ttl_seconds INT(11) NULL");
     $dbh->do("ALTER TABLE $clients_table ADD COLUMN IF NOT EXISTS refresh_token_ttl_seconds INT(11) NULL");
 
+    # 1.5.0: 'allowed_claims' changes shape from a flat array of catalog
+    # keys (["firstname","email"]) to a richer array of claim configs
+    # ([{type=>'field',source=>'firstname',claim_name=>'firstname'}, ...]),
+    # supporting extended-attribute-sourced and fixed-value claims plus an
+    # admin-editable output claim name (see _sanitize_claim_configs). Existing
+    # rows get each of their old catalog keys converted into an equivalent
+    # field-type config, claim_name defaulting to the same key. Detecting
+    # "already migrated" by checking whether the first element is a hashref
+    # (new shape) rather than a plain string (old shape) makes this safe to
+    # run again on every upgrade() without double-converting.
+    my $rows = $dbh->selectall_arrayref("SELECT id, allowed_claims FROM $clients_table", { Slice => {} });
+    for my $row (@$rows) {
+        my $old = try { decode_json( $row->{allowed_claims} // '[]' ) } catch { [] };
+        next unless ref($old) eq 'ARRAY' && @$old && !ref( $old->[0] );
+        my @migrated = map { { type => 'field', source => $_, claim_name => $_ } } @$old;
+        $dbh->do(
+            "UPDATE $clients_table SET allowed_claims = ? WHERE id = ?",
+            undef, encode_json( \@migrated ), $row->{id},
+        );
+    }
+
     return 1;
 }
 
@@ -379,7 +401,7 @@ sub create_client {
         $secret_hash,
         $args->{client_name},
         encode_json( $args->{redirect_uris}  || [] ),
-        encode_json( $self->_sanitize_claims( $args->{allowed_claims} ) ),
+        encode_json( $self->_sanitize_claim_configs( $args->{allowed_claims} ) ),
         encode_json( $self->_sanitize_categories( $args->{allowed_categories} ) ),
         encode_json( $self->_sanitize_categories( $args->{denied_categories} ) ),
         $self->_sanitize_consent_mode( $args->{consent_mode} ),
@@ -403,7 +425,7 @@ sub update_client {
         undef,
         $args->{client_name},
         encode_json( $args->{redirect_uris} || [] ),
-        encode_json( $self->_sanitize_claims( $args->{allowed_claims} ) ),
+        encode_json( $self->_sanitize_claim_configs( $args->{allowed_claims} ) ),
         encode_json( $self->_sanitize_categories( $args->{allowed_categories} ) ),
         encode_json( $self->_sanitize_categories( $args->{denied_categories} ) ),
         $self->_sanitize_consent_mode( $args->{consent_mode} ),
@@ -453,10 +475,83 @@ sub verify_client_secret {
     return Koha::AuthUtils::hash_password( $secret, $client->{client_secret_hash} ) eq $client->{client_secret_hash};
 }
 
-sub _sanitize_claims {
-    my ( $self, $claims ) = @_;
-    $claims ||= [];
-    return [ grep { Koha::Plugin::Com::Lmscloud::OAuthProvider::ClaimsCatalog->is_valid_key($_) } @$claims ];
+# Reserved output claim names: always emitted by ClaimsCatalog::build_claims
+# itself, so an admin-configured entry can never shadow them.
+my @RESERVED_CLAIM_NAMES = ( 'userid', 'sub' );
+
+# Validates and deduplicates a client's claim configuration - the list of
+# {type, source, claim_name, value} entries controlling what /userinfo (and
+# build_claims generally) releases for this client. Invalid entries are
+# dropped rather than rejected outright (same "defense in depth" posture as
+# _sanitize_categories - the admin UI already only offers valid choices).
+#
+#   type => 'field'     : source must be a Koha field known to ClaimsCatalog
+#   type => 'attribute'  : source must be an existing patron attribute type code
+#   type => 'static'     : value is released as-is, no patron lookup at all
+#
+# claim_name is the actual key released under - restricted to a safe
+# JSON-object-key/identifier shape, must not collide with a reserved name,
+# and must be unique within this client's own list (first occurrence wins;
+# later duplicates are silently dropped, so the UI's own live uniqueness
+# check is a courtesy, not the enforcement boundary).
+sub _sanitize_claim_configs {
+    my ( $self, $configs ) = @_;
+    $configs ||= [];
+
+    my %valid_attribute_codes = map { $_->code => 1 } Koha::Patron::Attribute::Types->search->as_list;
+    my %seen_names;
+    my @sanitized;
+
+    for my $entry (@$configs) {
+        next unless ref($entry) eq 'HASH';
+
+        my $type       = $entry->{type} // '';
+        my $source     = $entry->{source};
+        my $claim_name = $entry->{claim_name};
+        my $value      = $entry->{value};
+
+        next unless defined $claim_name && $claim_name =~ /^[A-Za-z_][A-Za-z0-9_]*$/;
+        next if grep { $claim_name eq $_ } @RESERVED_CLAIM_NAMES;
+        next if $seen_names{$claim_name};    # first *valid* occurrence wins - see below
+
+        my $sanitized_entry;
+        if ( $type eq 'field' ) {
+            next
+                unless defined $source
+                && Koha::Plugin::Com::Lmscloud::OAuthProvider::ClaimsCatalog->is_valid_key($source);
+            $sanitized_entry = { type => 'field', source => $source, claim_name => $claim_name };
+        }
+        elsif ( $type eq 'attribute' ) {
+            next unless defined $source && $valid_attribute_codes{$source};
+            $sanitized_entry = { type => 'attribute', source => $source, claim_name => $claim_name };
+        }
+        elsif ( $type eq 'static' ) {
+            next unless defined $value;
+            $sanitized_entry = { type => 'static', value => $value, claim_name => $claim_name };
+        }
+        else {
+            next;
+        }
+
+        # Only mark $claim_name as seen once an entry actually validates and
+        # is kept - otherwise an earlier *invalid* entry sharing the same
+        # name would block a later, valid one from ever being accepted.
+        $seen_names{$claim_name} = 1;
+        push @sanitized, $sanitized_entry;
+    }
+
+    return \@sanitized;
+}
+
+# Returns the catalog of configured extended patron-attribute types, for the
+# admin UI's "attribute" source picker: [{code, description}, ...], sorted
+# by description.
+sub patron_attribute_types {
+    my ($self) = @_;
+    return [
+        map { { code => $_->code, description => $_->description } }
+        Koha::Patron::Attribute::Types->search( {}, { order_by => 'description' } )->as_list
+    ];
 }
 
 # Valid values, in the order shown in the admin UI.
@@ -939,7 +1034,7 @@ sub configure {
         my ( $client_id, $secret ) = $self->create_client(
             {   client_name        => scalar $cgi->param('client_name'),
                 redirect_uris      => $self->_split_lines( scalar $cgi->param('redirect_uris') ),
-                allowed_claims     => [ _multi_param( $cgi, 'allowed_claims' ) ],
+                allowed_claims     => _claim_configs_from_cgi($cgi),
                 allowed_categories => [ _multi_param( $cgi, 'allowed_categories' ) ],
                 denied_categories  => [ _multi_param( $cgi, 'denied_categories' ) ],
                 consent_mode       => scalar $cgi->param('consent_mode'),
@@ -955,7 +1050,7 @@ sub configure {
             scalar $cgi->param('id'),
             {   client_name        => scalar $cgi->param('client_name'),
                 redirect_uris      => $self->_split_lines( scalar $cgi->param('redirect_uris') ),
-                allowed_claims     => [ _multi_param( $cgi, 'allowed_claims' ) ],
+                allowed_claims     => _claim_configs_from_cgi($cgi),
                 allowed_categories => [ _multi_param( $cgi, 'allowed_categories' ) ],
                 denied_categories  => [ _multi_param( $cgi, 'denied_categories' ) ],
                 consent_mode       => scalar $cgi->param('consent_mode'),
@@ -1010,6 +1105,7 @@ sub _render_configure {
     $template->param(
         clients          => $self->list_clients,
         claims_catalog   => Koha::Plugin::Com::Lmscloud::OAuthProvider::ClaimsCatalog->catalog,
+        attribute_types  => $self->patron_attribute_types,
         consent_modes    => $self->consent_modes,
         patron_categories => \@categories,
         settings         => $self->settings,
@@ -1069,6 +1165,31 @@ sub _split_lines {
 sub _multi_param {
     my ( $cgi, $name ) = @_;
     return $cgi->can('multi_param') ? $cgi->multi_param($name) : $cgi->param($name);
+}
+
+# Reassembles the claim configuration table from the admin form's parallel
+# array fields (one <tr> per claim in configure.tt, each contributing one
+# entry to every one of these four arrays at the same index) into the
+# {type, source, claim_name, value} shape _sanitize_claim_configs expects.
+sub _claim_configs_from_cgi {
+    my ($cgi) = @_;
+
+    my @types      = _multi_param( $cgi, 'claim_type' );
+    my @sources    = _multi_param( $cgi, 'claim_source' );
+    my @claim_names = _multi_param( $cgi, 'claim_name' );
+    my @values     = _multi_param( $cgi, 'claim_value' );
+
+    my @configs;
+    for my $i ( 0 .. $#types ) {
+        push @configs,
+            {
+            type       => $types[$i],
+            source     => $sources[$i],
+            claim_name => $claim_names[$i],
+            value      => $values[$i],
+            };
+    }
+    return \@configs;
 }
 
 1;

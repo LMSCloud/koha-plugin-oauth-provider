@@ -43,10 +43,19 @@ sequenceDiagram
     App->>User: Redirect to /authorize?client_id=...&redirect_uri=...&state=...&scope=openid&nonce=...
     User->>Koha: GET /authorize
     Koha->>User: Login form
-    User->>Koha: POST /authorize (userid, password)
+    User->>Koha: POST /authorize (stage=login: userid, password)
     Koha->>Koha: checkpw_internal()
-    Koha->>User: Consent form (which data will be shared)
-    User->>Koha: POST /authorize (consent=allow, signed ticket)
+    opt patron has 2FA enabled on this Koha
+        Koha->>User: One-time code form
+        User->>Koha: POST /authorize (stage=otp: otp_token, signed ticket)
+        Koha->>Koha: Koha::Auth::TwoFactorAuth->verify()
+    end
+    alt client's consent_mode requires asking
+        Koha->>User: Consent form (which data will be shared)
+        User->>Koha: POST /authorize (stage=consent: consent=allow, signed ticket)
+    else consent_mode is 'never', or 'remember' already covers these claims
+        Note over Koha: consent screen skipped entirely
+    end
     Koha->>User: Redirect to redirect_uri?code=...&state=...
     User->>App: Redirect with code
     App->>Koha: POST /token (code, client_id, client_secret)
@@ -58,35 +67,52 @@ sequenceDiagram
 See the comments in `Controller.pm` for details. Short version:
 
 1. **`GET /authorize`** validates `client_id`/`redirect_uri` and shows a self-contained
-   login form (no Koha chrome - see section 5). `scope` and `nonce` (if supplied by the
+   login form (no Koha chrome - see section 8). `scope` and `nonce` (if supplied by the
    client) are carried through all the way to the finished authorization code.
 2. **`POST /authorize`** (stage `login`) checks the credentials via
    `C4::Auth::checkpw_internal` (allows login by either `userid` or `cardnumber`; Koha's
-   own account lockout and failed-attempt tracking kicks in automatically) and then shows
-   a consent form listing the data that will be shared.
-3. **`POST /authorize`** (stage `consent`) verifies a short-lived (5 min), signed ticket
-   (JWT via `Mojo::JWT`, HMAC secret generated once at install time) and, on approval,
-   redirects to the application's `redirect_uri` with an authorization code.
-4. **`POST /token`** exchanges the code (`authorization_code` grant, optionally with a
+   own account lockout and failed-attempt tracking kicks in automatically).
+3. **`POST /authorize`** (stage `otp`, only if the patron has 2FA enabled - section 6)
+   verifies a one-time code via `Koha::Auth::TwoFactorAuth`, gated by the same kind of
+   signed ticket as the consent step.
+4. Depending on the client's **consent mode** (section 5), either a consent form listing
+   the data that will be shared is shown next, or it's skipped entirely and the flow goes
+   straight to issuing a code.
+5. **`POST /authorize`** (stage `consent`, if shown) verifies a short-lived (5 min),
+   signed ticket (JWT via `Mojo::JWT`, HMAC secret generated once at install time) and, on
+   approval, redirects to the application's `redirect_uri` with an authorization code.
+6. **`POST /token`** exchanges the code (`authorization_code` grant, optionally with a
    PKCE `code_verifier`) or a refresh token (`refresh_token` grant, rotating) for an
-   `access_token` + `refresh_token`, plus an `id_token` if the original `scope` included
-   `openid`.
-5. **`GET /userinfo`** with `Authorization: Bearer <access_token>` returns
-   `{"userid": "...", "sub": "...", ...whichever extra fields are configured for that client}`.
+   `access_token` + `refresh_token` (lifetimes configurable, section 7), plus an
+   `id_token` if the original `scope` included `openid`.
+7. **`GET /userinfo`** with `Authorization: Bearer <access_token>` returns
+   `{"userid": "...", "sub": "...", ...whichever extra fields are configured for that
+   client}` - **see section 11 for a Koha core limitation that must be patched around for
+   this call to work at all when the relying party is itself a Koha instance.**
 
-All routes pass through Koha's REST auth layer unauthenticated (no `x-koha-authorization`
-in `api_routes.json` - the same technique Koha's own `/oauth/token` endpoint uses), since
-they handle their own authentication.
+None of this plugin's routes declare `x-koha-authorization` in `api_routes.json` - the
+same technique Koha's own `/oauth/token` endpoint uses - since they all handle their own
+authentication. That's necessary but not sufficient for `/userinfo` specifically: see
+section 11 for a Koha core behavior that intercepts its `Authorization: Bearer` header
+before the route is even reached, unless patched around.
 
 ## 3. Available claims
 
-Hard-coded in the plugin (`ClaimsCatalog.pm`), toggled per client via checkboxes in the
-admin UI: `cardnumber`, `borrowernumber`, `firstname`, `surname`, `email`, `branchcode`,
-`branchname`, `categorycode`, `category_description`, `dateexpiry`, `age`, `address`,
-`email_verified`, `phone_number`, `phone_number_verified`, `fsk`, `status`. `userid` is
-not a catalog entry and is **always** released, as is `sub` (the immutable
-`borrowernumber`, as a string - in case staff ever rename a `userid`, and because OIDC
-requires a stable `sub` claim).
+Each client has a configurable list of claims, managed as a table in the admin UI (not a
+flat checkbox list): every entry has a **type** - `field` (one of the patron fields listed
+below, from `ClaimsCatalog.pm`), `attribute` (any configured Koha extended patron
+attribute, by code) or `static` (a fixed value, not derived from the patron at all) - plus
+an admin-editable **claim name**, the actual key the value is released under in
+`/userinfo`. Claim names default to the field key/attribute code but can be renamed
+freely, and must be unique within a client (enforced both in the UI and server-side).
+
+Built-in `field` catalog: `cardnumber`, `borrowernumber`, `firstname`, `surname`, `email`,
+`branchcode`, `branchname`, `categorycode`, `category_description`, `dateexpiry`,
+`dateofbirth`, `age`, `address`, `phone_number`, `mobile`, `sex`, `flags` (this patron's
+own userflags bitmask on *this* Koha - not to be confused with granting permissions on a
+relying party), `lang`, `fsk`, `status`. `userid` is not a catalog entry and is **always**
+released, as is `sub` (the immutable `borrowernumber`, as a string - in case staff ever
+rename a `userid`, and because OIDC requires a stable `sub` claim).
 
 `age` is computed via `Koha::Patron::get_age` (years as of today, derived from
 `dateofbirth`) and is released as `null` if the patron has no date of birth on file.
@@ -115,27 +141,34 @@ alternate/"B_" address Koha also has, since OIDC's `address` claim models a sing
 address, not two. Every member is omitted individually when empty (all members are
 optional per spec); if the patron has no address information at all, the whole `address`
 claim is `null` rather than an empty object. `scopes_supported` in the discovery document
-(section 7) lists `address` alongside `openid`/`profile` for OIDC client libraries that
+(section 10) lists `address` alongside `openid`/`profile` for OIDC client libraries that
 inspect it, but that's informational only, like the other two: what's actually released
-is governed purely by this per-client admin checkbox, same as every other claim in this
-plugin - the `scope` a client requests at `/authorize` is otherwise unused for claim
+is governed purely by this per-client admin configuration, same as every other claim in
+this plugin - the `scope` a client requests at `/authorize` is otherwise unused for claim
 selection (it's only inspected for the literal value `openid`, to decide whether to also
-issue a signed `id_token` - see section 7).
+issue a signed `id_token` - see section 10).
 
-### `email_verified`, `phone_number`, `phone_number_verified` (OIDC "email"/"phone" scopes)
+### `phone_number` / `mobile` (OIDC "phone" scope)
 
-`email` (already covered above) plus these three complete OIDC Core's `email` and
-`phone` scope claim sets. `phone_number` maps to Koha's primary phone field
-(`Koha::Patron::phone` - **not** `mobile` or `phonepro`; swap the accessor in
-`ClaimsCatalog.pm` if a client actually needs the mobile number instead).
+`phone_number` maps to Koha's primary phone field (`Koha::Patron::phone` - **not**
+`mobile` or `phonepro`). `mobile` maps to `Koha::Patron::mobile` directly, for clients
+that specifically need the mobile number. `scopes_supported` in the discovery document
+(section 10) lists `phone` alongside the others for the same informational-only reason
+described above for `address`.
 
-`email_verified`/`phone_number_verified` are **hardcoded to the JSON boolean `false`**
-(via `Mojo::JSON`'s `false`, so they encode as a real JSON boolean, not the number `0`
-or the string `"false"`) - Koha has no email/phone verification mechanism at all (no
-"verified" column anywhere on the borrowers table), so `false` is simply the honest,
-spec-compliant answer for a system that never verifies either. `scopes_supported` in the
-discovery document (section 7) lists `email`/`phone` alongside the others for the same
-informational-only reason described above for `address`.
+### `attribute`-type claims (Koha extended patron attributes)
+
+Any configured extended patron attribute (`Administration &rarr; Patron attribute
+types`) can be released under a client-chosen claim name, picked by its attribute code
+in the admin UI's "Add claim" modal. Repeatable attribute types release a JSON array of
+all the patron's values for that code; non-repeatable ones release a single value (or
+`null` if the patron has none on file).
+
+### `static`-type claims (fixed values)
+
+A claim entry can also be a fixed value that isn't derived from the patron at all -
+useful for e.g. telling a relying party which IdP/environment a token came from. Every
+patron authenticating through that client gets the same value.
 
 ### `fsk` and `status` (LMSCloud "Onleihe"/divibib patron status - reimplemented, no fork dependency)
 
@@ -203,7 +236,7 @@ consent screen or authorization code is ever produced. A rejected patron is redi
 straight back to the client's `redirect_uri` with `error=access_denied&state=...` - the
 same outcome as a patron clicking "Deny" on the consent screen - rather than shown a
 Koha-branded error page, since `redirect_uri` is already trusted by that point in the
-flow (see the redirect-vs-error-page reasoning in section 10). External applications that
+flow (see the redirect-vs-error-page reasoning in section 14). External applications that
 already handle a user declining consent therefore need no special-casing to also handle
 a category-based rejection.
 
@@ -212,7 +245,64 @@ against the client's `allowed_categories`/`denied_categories` (both JSON arrays 
 category codes, sanitized against `Koha::Patron::Categories` on save so a hand-crafted
 POST can't smuggle in a nonexistent code).
 
-## 5. Why standalone templates instead of Koha chrome
+## 5. Consent management
+
+Each client has a **consent mode**, set under *Plugins &rarr; ... &rarr; Configure*:
+
+- **Always ask** (default): the consent screen is shown on every single login.
+- **Ask once, remember the decision**: the first successful login for a given
+  (client, patron) pair shows the consent screen as usual; on `allow`, the exact set of
+  claim names granted is persisted (`OAuthProvider::remember_consent`, a dedicated table
+  keyed on client + `borrowernumber`). Later logins skip the consent screen **as long as**
+  the client's *currently configured* claims are already covered by that stored grant. If
+  an admin later widens the client's claim list, the patron sees the consent screen again
+  on their very first login after that change - shrinking the claim list never triggers a
+  fresh prompt, since the patron already agreed to release a superset once.
+- **Never ask (trusted client)**: the consent screen is always skipped, no grant is
+  persisted (there is nothing to remember). Intended for first-party/trusted
+  integrations - e.g. another Koha instance within the same organization - where the
+  claims released are effectively already governed entirely by the admin-side client
+  configuration, not by an end-user decision per login.
+
+`Controller::_proceed_after_authentication` implements the skip/show decision;
+`OAuthProvider::consent_covers`/`remember_consent`/`forget_consent` manage the persisted
+grants for "remember" mode.
+
+## 6. Two-factor authentication
+
+If a patron has 2FA enabled on **this** Koha (i.e. `TwoFactorAuthentication` is not
+`disabled` and the patron has completed enrollment - has a `secret` on file), logging in
+through this plugin also requires a one-time code, exactly as Koha's own staff login
+would. This is deliberately re-implemented here rather than reused: this plugin never
+goes through `C4::Auth::checkauth()`'s session-based login flow at all (see section 8),
+so Koha's built-in 2FA check - itself only wired into that same session-based flow, and
+only for the staff interface - would otherwise be silently bypassed entirely, letting a
+patron who set up 2FA specifically to harden their account authenticate through this
+plugin with just their password.
+
+`Controller::_patron_requires_2fa` decides whether the challenge applies;
+`Koha::Auth::TwoFactorAuth` (the same class Koha's core login uses) verifies the
+submitted code against the patron's TOTP secret. Not implemented: Koha's "enforced" mode,
+which additionally *forces* not-yet-enrolled patrons through 2FA setup (QR code
+enrollment) before they can log in anywhere - that needs an enrollment UI this plugin
+doesn't have. This only covers accounts where 2FA is already active.
+
+## 7. Token lifetimes
+
+Access/refresh token lifetimes (in seconds) have a plugin-wide default, configurable
+under *Plugins &rarr; ... &rarr; Configure &rarr; General settings*, with an optional
+per-client override (leave empty to inherit the global default) alongside each
+application's other settings. `OAuthProvider::effective_ttls($client)` resolves which
+value actually applies for a given client at token-issuance time; the same resolved
+`access_ttl` is also used for the `id_token`'s `exp` claim, so it never claims a
+different validity period than the access token it accompanies.
+
+Authorization codes have their own, much shorter, fixed lifetime (60 seconds, not
+admin-configurable) - refresh tokens are rotated on every use (the old one is revoked the
+moment a new pair is issued from it), which matters more for limiting the blast radius of
+a leaked refresh token than a short TTL would on its own.
+
+## 8. Why standalone templates instead of Koha chrome
 
 `Koha::Plugins::Base::get_template()` is hardcoded to `type => "intranet"` and there is no
 OPAC-side plugin runner. `login.tt`/`consent.tt`/`error.tt` (under `templates/`) are
@@ -222,7 +312,7 @@ chrome (mirroring the sibling plugin
 by contrast, are regular intranet pages (`get_template()`, requiring staff login + the
 `plugins` permission).
 
-## 6. Bilingual UI (English/German)
+## 9. Bilingual UI (English/German)
 
 `configure.tt`, `tool.tt`, `login.tt`, `consent.tt` and `error.tt` render in English or
 German depending on Koha's configured interface language, with the strings being
@@ -276,9 +366,9 @@ in Koha core for valid codes, e.g. `fr-FR`) with the same keys as `default.inc`,
 sure that language is enabled in the `OPACLanguages`/`language` system preferences -
 nothing else needs to change.
 
-## 7. Full OpenID Connect
+## 10. Full OpenID Connect
 
-Beyond plain OAuth2 (sections 1-4), the plugin supports OpenID Connect when the client
+Beyond plain OAuth2 (sections 1-7), the plugin supports OpenID Connect when the client
 includes `scope=openid` when calling `/authorize`:
 
 - **`nonce`**: if supplied by the client to `/authorize`, it is echoed back unchanged in
@@ -329,7 +419,68 @@ plugin's own discovery URL
 (`.../api/v1/contrib/oauthprovider/.well-known/openid-configuration`) instead of relying
 on pure issuer auto-discovery, which most OIDC client libraries offer as an option.
 
-## 8. Installation
+## 11. Known limitation: `/userinfo` requires a small Koha core patch
+
+**`GET /userinfo` does not work out of the box** on the Koha instance hosting this
+plugin, for *any* caller, regardless of what OAuth2/OIDC client library is used. This was
+found and root-caused the hard way against real Koha instances and is not specific to
+this plugin's own code.
+
+**Cause:** every `/api/v1/...` request on a Koha instance passes through
+`Koha::REST::V1::Auth::authenticate_api_request`. If the request carries an
+`Authorization: Bearer ...` header - which is exactly how `/userinfo` must be called, per
+RFC 6750 - Koha unconditionally tries to validate that token against **its own**,
+completely unrelated OAuth2 API-key mechanism (`Koha::ApiKeys` /
+`Net::OAuth2::AuthorizationServer`), and throws `401 Unauthorized` immediately on
+mismatch - *before* any plugin route/controller is ever reached. This happens
+irrespective of the route's namespace (`/api/v1/contrib/...` plugin routes are not
+exempted) and irrespective of who's calling: Koha's own OIDC client, curl, or any other
+library:
+
+```perl
+if ($authorization_header and $authorization_header =~ /^Bearer /) {
+    # attempt to use OAuth2 authentication
+    ...
+    if ($valid_token) { ... }
+    else {
+        # If we have "Authorization: Bearer" header and oauth authentication
+        # failed, do not try other authentication means
+        Koha::Exceptions::Authentication::Required->throw( error => 'Authentication failure.' );
+    }
+}
+```
+(`Koha/REST/V1/Auth.pm`)
+
+**Fix applied on our own IdP-hosting instances:** a small, opt-in core patch adds an
+early exemption, checked *before* any Bearer-header handling, for routes that declare
+`"x-plugin-owns-auth": true` in their `api_routes.json` operation (this plugin's
+`/userinfo` GET operation does):
+
+```perl
+# in Koha::REST::V1::Auth::authenticate_api_request, right after $spec is resolved
+if ( $params->{is_plugin} && $spec->{'x-plugin-owns-auth'} ) {
+    validate_query_parameters( $c, $spec );
+    return 1;
+}
+```
+
+This is a narrow, additive, opt-in change: routes/plugins that don't set the new flag
+keep their exact current behavior (including any plugin that deliberately relies on
+Koha's own Bearer-token/API-key auth for its own routes). It needs to be applied only to
+the Koha instance(s) **hosting this plugin** (acting as the IdP) - not to relying-party
+Koha instances that merely call out to `/userinfo` as a client.
+
+**Without this patch, `/userinfo` cannot be used at all**, by any client - the `id_token`
+stays deliberately minimal regardless (section 10), so it is not an alternative source
+for the per-client-configured claims (section 3) for OIDC clients either. A **pure OAuth2
+client that never requests `openid`** is affected most severely: it never receives an
+`id_token` in the first place, so `/userinfo` is its *only* possible source of claims -
+without this patch, such a client can authenticate a patron but never learn anything else
+about them. Applying this patch (or an equivalent core fix) on the IdP-hosting instance
+is therefore effectively **required** for this plugin to be useful beyond bare
+authentication.
+
+## 12. Installation
 
 1. Package this repository as a `.kpz`:
    ```bash
@@ -339,12 +490,14 @@ on pure issuer auto-discovery, which most OIDC client libraries offer as an opti
    plugin* (`enable_plugins` must be enabled in `koha-conf.xml`).
 3. Under *Plugins &rarr; OAuth2 / OpenID Connect Identity Provider &rarr; Configure*, set
    the "Public base URL of this plugin" (only required for OIDC/`scope=openid`, see
-   section 7) and register an application: name, redirect URIs, which claims it may
-   receive (section 3), and optionally which patron categories may/may not authenticate
-   for it at all (section 4). The client ID and client secret are shown - the secret
-   **only once**, after that only its hash exists in the database.
-4. For a real `/.well-known/openid-configuration` at the domain root: set up the
-   webserver rewrite from section 7 (optional, not part of the plugin).
+   section 10) and register an application: name, redirect URIs, which claims it may
+   receive (section 3), consent mode (section 5), and optionally which patron categories
+   may/may not authenticate for it at all (section 4). The client ID and client secret
+   are shown - the secret **only once**, after that only its hash exists in the database.
+4. **Apply the core patch from section 11** on this same Koha instance - without it,
+   `/userinfo` cannot be called at all, by any client.
+5. For a real `/.well-known/openid-configuration` at the domain root: set up the
+   webserver rewrite from section 10 (optional, not part of the plugin).
 
 Because Koha plugins cannot declare their own CPAN dependencies (plugin code only runs
 with modules already present on the server, see `Koha/Plugins.pm`/
@@ -355,7 +508,7 @@ RS256, see section 1) or for the `fsk`/`status` claims (deliberately reimplement
 instead of depending on the LMSCloud-fork-only `C4::External::DivibibPatronStatus` - see
 section 3).
 
-## 9. Example: token and userinfo calls
+## 13. Example: token and userinfo calls
 
 ```bash
 # Step 4: exchange the code for a token (assuming scope=openid at step 1)
@@ -367,16 +520,18 @@ curl -X POST https://opac.example.org/api/v1/contrib/oauthprovider/token \
 # -> {"access_token":"...","token_type":"Bearer","expires_in":3600,
 #     "refresh_token":"...","id_token":"eyJ..."}
 
-# Step 5: fetch user data
+# Step 5: fetch user data - requires the core patch from section 11 to be applied,
+# otherwise Koha's own REST auth layer rejects this with 401 before it ever reaches
+# the plugin (see section 11 for why)
 curl https://opac.example.org/api/v1/contrib/oauthprovider/userinfo \
   -H "Authorization: Bearer <access_token>"
 # -> {"userid":"jdoe","sub":"42"}
 
-# Discovery document (plugin's own URL, see section 7 for the webserver rewrite)
+# Discovery document (plugin's own URL, see section 10 for the webserver rewrite)
 curl https://opac.example.org/api/v1/contrib/oauthprovider/.well-known/openid-configuration
 ```
 
-## 10. Security
+## 14. Security
 
 - `client_secret` is never stored in plaintext (bcrypt via
   `Koha::AuthUtils::hash_password`, same pattern as `Koha::ApiKey`).
@@ -399,57 +554,79 @@ curl https://opac.example.org/api/v1/contrib/oauthprovider/.well-known/openid-co
 - The `id_token` signature (HS256) uses the `client_secret` the client just authenticated
   with at `/token`, in plaintext, as the key - it is not stored anywhere additionally for
   this purpose, only used in memory at the moment the token is issued.
+- A patron with 2FA enabled on the IdP's Koha (section 6) cannot fully authenticate
+  through this plugin with just their password - the same one-time-code challenge Koha's
+  own staff login would require is enforced here too.
 
-## 11. What was NOT tested
+## 15. What has been tested, and known remaining gaps
 
-As with the sibling plugin `koha-plugin-eid-verification`, no running Koha instance with
-a database was available for this session. In particular, untested:
+Unlike when this plugin was first written, the full flow has since been exercised against
+**real, separately hosted Koha instances** acting as both IdP (running this plugin) and
+relying party (Koha's own built-in OIDC/OAuth2 client) - across multiple Koha versions. That process surfaced and fixed a number of real issues that couldn't have been
+found by code review alone, among them: the exact `redirect_uri` string a relying party's
+OIDC client actually sends (including reverse-proxy/mount-prefix quirks in
+`url_for('current')` vs `req->url->path`), `identity_provider_domains` catch-all/wildcard
+matching semantics, the `auth.register` interface restriction (auto-registration is
+OPAC-only in Koha core unless a domain explicitly sets `auto_register_staff`), the
+`mapping`/`matchpoint` interaction on the relying-party side, and - the big one - the
+`/userinfo` Bearer-token collision documented in section 11.
 
-- The complete end-to-end flow (login &rarr; consent &rarr; token &rarr; userinfo/id_token)
-  against a real Koha installation, including the `upgrade()` migration from version
-  1.0.0 through 1.2.0 (`ALTER TABLE ... ADD COLUMN IF NOT EXISTS`).
+**Verified this way:** the complete authorize &rarr; login &rarr; consent &rarr; token
+&rarr; userinfo round trip end-to-end; `upgrade()` migrations through the versions this
+session touched (per-client category allow/deny-list, consent modes + the "remember"
+grants table, per-client TTL overrides, and the claims-configuration reshape from a flat
+key list to typed `{type, source, claim_name, value}` entries); the per-client category
+access-control gate against real patron/category data; template rendering of
+`configure.tt` (including the claims table + "add claim" modal) and the public
+login/consent pages on real Koha instances; and client-secret verification/rotation.
+
+**Still not specifically verified:**
+- The 2FA (section 6) one-time-code challenge against a real TOTP-enrolled account.
+- The "remember" and "never" consent modes (section 5) and the per-client token-lifetime
+  override (section 7) end-to-end, though their code paths share the same
+  already-verified plumbing as the rest of the flow.
 - The exact return behavior of `C4::Auth::checkpw_internal` in edge cases (e.g. expired
   password, locked account) - the code assumes the confirmed normal case
-  `(1, $cardnumber, $userid, $patron)` or `0` (see `C4/Auth.pm:2072-2101` in the LMSCloud
-  fork); edge cases should be checked before production use.
-- The rendering of `configure.tt`/`tool.tt`/`login.tt`/`consent.tt`/`error.tt` on an
-  actual Koha instance (Template Toolkit syntax was only checked by code review).
-- The behavior of `Mojo::JWT`'s `decode()` on expired tokens (the code assumes an expired
-  `exp` claim raises an exception, which is caught via `try/catch`).
-- Interoperability with concrete OIDC client libraries (e.g. whether they accept
-  HS256 id_tokens without RS256/JWKS, and whether they offer a custom discovery URL
-  instead of pure issuer auto-discovery), as well as the webserver rewrite itself
-  (the nginx/Apache examples in section 7 are untested templates).
+  `(1, $cardnumber, $userid, $patron)` or `0`; edge cases should be checked before
+  production use if not already covered by Koha's own login-attempt handling.
+- The behavior of `Mojo::JWT`'s `decode()` on expired tokens specifically (the code
+  assumes an expired `exp` claim raises an exception, which is caught via `try`/`catch`).
+- Interoperability with a **non-Koha** OIDC client library (e.g. whether it accepts
+  HS256 id_tokens without RS256/JWKS, and whether it offers a custom discovery URL
+  instead of pure issuer auto-discovery) - everything tested so far used Koha's own
+  OIDC/OAuth2 client on the relying-party side. The webserver rewrite examples in section
+  10 (nginx/Apache) are still untested templates.
 - The `fsk`/`status` claims' reimplemented logic (`_patron_status` in `ClaimsCatalog.pm`)
-  against real patron/fines/overdues data - only exercised with substituted fake
-  `Koha::Patron` objects here, since real ones need a live database. In particular, no
-  side-by-side comparison against the LMSCloud fork's actual
-  `C4::External::DivibibPatronStatus` output was possible in this session; the two
-  should be diffed against each other on a real LMSCloud instance before relying on this
-  reimplementation to match it exactly.
-- The per-client category access-control gate (`is_client_allowed_for_patron`, section
-  4) against a real patron/category database and a real consent/redirect round-trip -
-  only exercised with fake `Koha::Patron`/client hashrefs here.
+  side-by-side against the LMSCloud fork's actual `C4::External::DivibibPatronStatus`
+  output on real patron/fines/overdues data - not part of this session's testing.
+- `attribute`-type claims (section 3) against a patron with a **repeatable** extended
+  attribute type carrying multiple values.
 
-## 12. File overview
+## 16. File overview
 
 ```
 Koha/Plugin/Com/Lmscloud/
 ├── OAuthProvider.pm                 # Main plugin: metadata, install/upgrade/uninstall,
-│                                     # client CRUD, code/token management, configure()/tool(),
-│                                     # cronjob_nightly(), api_namespace/api_routes
+│                                     # client CRUD, claim-config sanitization, consent
+│                                     # persistence, TTL resolution, code/token management,
+│                                     # configure()/tool(), cronjob_nightly(), api_routes
 └── OAuthProvider/
-    ├── Controller.pm                 # Mojolicious controller: authorize/token/userinfo/discovery/jwks
-    ├── ClaimsCatalog.pm              # Static list of allowable userinfo claims
+    ├── Controller.pm                 # Mojolicious controller: authorize/token/userinfo/
+    │                                  # discovery/jwks, login->otp->consent flow
+    ├── ClaimsCatalog.pm              # Built-in patron-field catalog + build_claims()
+    │                                  # (field/attribute/static claim types)
     ├── api_routes.json               # OpenAPIv2 fragment: /authorize,/token,/userinfo,
     │                                  # /.well-known/openid-configuration,/jwks
-    ├── configure.tt                  # Staff admin UI: client management
+    │                                  # ("x-plugin-owns-auth" on /userinfo - section 11)
+    ├── configure.tt                  # Staff admin UI: client management, claims table +
+    │                                  # "add claim" modal, consent mode, TTL overrides
     ├── tool.tt                       # Staff tool: manual cleanup, active tokens
     ├── i18n/
     │   ├── default.inc                # English strings (base/fallback)
     │   └── de-DE.inc                   # German strings
     └── templates/
         ├── login.tt                  # Standalone login page (public, no Koha chrome)
+        ├── otp.tt                    # Standalone 2FA one-time-code page (public)
         ├── consent.tt                 # Standalone consent page (public)
         └── error.tt                   # Standalone error page (public)
 ```

@@ -8,6 +8,120 @@
 [% INCLUDE 'doc-head-open.inc' %]
 <title>[% T.cfg_title | $raw %]</title>
 [% INCLUDE 'doc-head-close.inc' %]
+
+[%# Renders the claims configuration table + "add claim" modal. Existing
+    entries (claims, an arrayref of {type, source, claim_name, value}) are
+    rendered server-side as real rows; new rows added via the modal are
+    built client-side in the same shape by the script at the bottom of this
+    file. Only one of the edit/create forms is ever present on a page load,
+    so this BLOCK is only ever PROCESSed once despite being usable by both. %]
+[% BLOCK claims_config_widget %]
+  <div class="oauthprovider-claims-widget"
+       data-name-hint="[% T.cfg_claim_name_hint | html %]"
+       data-duplicate-error="[% T.cfg_claim_duplicate_error | html %]"
+       data-remove-label="[% T.cfg_claim_remove | html %]"
+       data-static-label="[% T.cfg_claim_source_static | html %]">
+    <table class="table oauthprovider-claims-table">
+      <thead>
+        <tr>
+          <th>[% T.cfg_claim_source_th | $raw %]</th>
+          <th>[% T.cfg_claim_name_th | $raw %]</th>
+          <th>[% T.cfg_claim_value_th | $raw %]</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        [% FOREACH entry IN claims %]
+          [% SET source_display = '' %]
+          [% IF entry.type == 'field' %]
+            [% SET label_key = 'claim_label_' _ entry.source %]
+            [% SET source_display = T.$label_key %]
+          [% ELSIF entry.type == 'attribute' %]
+            [% FOREACH at IN attribute_types %]
+              [% IF at.code == entry.source %][% SET source_display = at.description _ ' (' _ at.code _ ')' %][% END %]
+            [% END %]
+          [% ELSE %]
+            [% SET source_display = T.cfg_claim_source_static %]
+          [% END %]
+          <tr class="claim-row">
+            <td class="claim-source-display">[% source_display | html %]</td>
+            <td>
+              <input type="hidden" name="claim_type" value="[% entry.type | html %]">
+              <input type="hidden" name="claim_source" value="[% entry.source | html %]">
+              <input type="text" name="claim_name" value="[% entry.claim_name | html %]" class="claim-name-input" required pattern="[A-Za-z_][A-Za-z0-9_]*">
+            </td>
+            <td>
+              <input type="text" name="claim_value" value="[% entry.value | html %]" class="claim-value-input"
+                [% UNLESS entry.type == 'static' %]style="visibility:hidden"[% END %]>
+            </td>
+            <td><button type="button" class="btn btn-default btn-xs claims-remove-row">[% T.cfg_claim_remove | $raw %]</button></td>
+          </tr>
+        [% END %]
+      </tbody>
+    </table>
+    <button type="button" class="btn btn-default btn-sm claims-add-btn" data-toggle="modal" data-target="#oauthprovider-claim-modal">[% T.cfg_claim_add | $raw %]</button>
+    <div class="claims-duplicate-error dialog alert" style="display:none;margin-top:.5em">[% T.cfg_claim_duplicate_error | $raw %]</div>
+  </div>
+
+  <select id="oauthprovider-field-catalog-template" style="display:none">
+    [% FOREACH claim IN claims_catalog %]
+      [% SET label_key = 'claim_label_' _ claim.key %]
+      <option value="[% claim.key | html %]">[% T.$label_key | $raw %]</option>
+    [% END %]
+  </select>
+  <select id="oauthprovider-attribute-catalog-template" style="display:none">
+    [% FOREACH at IN attribute_types %]
+      <option value="[% at.code | html %]">[% at.description | html %] ([% at.code | html %])</option>
+    [% END %]
+  </select>
+
+  <div class="modal" id="oauthprovider-claim-modal" tabindex="-1" role="dialog">
+    <div class="modal-dialog" role="document">
+      <div class="modal-content">
+        <div class="modal-header">
+          <button type="button" class="close" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">&times;</span></button>
+          <h4 class="modal-title">[% T.cfg_claim_modal_title | $raw %]</h4>
+        </div>
+        <div class="modal-body">
+          <fieldset class="rows">
+            <ol>
+              <li>
+                <label for="oauthprovider-modal-type">[% T.cfg_claim_type_label | $raw %]</label>
+                <select id="oauthprovider-modal-type">
+                  <option value="field">[% T.cfg_claim_type_field | $raw %]</option>
+                  <option value="attribute">[% T.cfg_claim_type_attribute | $raw %]</option>
+                  <option value="static">[% T.cfg_claim_type_static | $raw %]</option>
+                </select>
+              </li>
+              <li class="oauthprovider-modal-field-row">
+                <label for="oauthprovider-modal-field-source">[% T.cfg_claim_source_label | $raw %]</label>
+                <select id="oauthprovider-modal-field-source"></select>
+              </li>
+              <li class="oauthprovider-modal-attribute-row" style="display:none">
+                <label for="oauthprovider-modal-attribute-source">[% T.cfg_claim_source_label | $raw %]</label>
+                <select id="oauthprovider-modal-attribute-source"></select>
+              </li>
+              <li class="oauthprovider-modal-static-row" style="display:none">
+                <label for="oauthprovider-modal-static-value">[% T.cfg_claim_value_label | $raw %]</label>
+                <input type="text" id="oauthprovider-modal-static-value">
+              </li>
+              <li>
+                <label for="oauthprovider-modal-claim-name">[% T.cfg_claim_name_label | $raw %]</label>
+                <input type="text" id="oauthprovider-modal-claim-name" pattern="[A-Za-z_][A-Za-z0-9_]*">
+                <div class="hint">[% T.cfg_claim_name_hint | $raw %]</div>
+              </li>
+            </ol>
+          </fieldset>
+          <div class="oauthprovider-modal-error dialog alert" style="display:none"></div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-default" data-dismiss="modal">[% T.cfg_cancel | $raw %]</button>
+          <button type="button" class="btn btn-primary" id="oauthprovider-modal-confirm">[% T.cfg_claim_add | $raw %]</button>
+        </div>
+      </div>
+    </div>
+  </div>
+[% END %]
 <style>
     #plugins_oauthprovider_configure fieldset.rows label {
         width: 20rem;
@@ -129,9 +243,8 @@
                   [% IF client.allowed_claims.size == 0 %]
                     <em>[% T.cfg_only_userid | $raw %]</em>
                   [% ELSE %]
-                    [% FOREACH claim_key IN client.allowed_claims %]
-                      [% SET claim_label_key = 'claim_label_' _ claim_key %]
-                      <div>[% T.$claim_label_key | $raw %]</div>
+                    [% FOREACH entry IN client.allowed_claims %]
+                      <div>[% entry.claim_name | html %]</div>
                     [% END %]
                   [% END %]
                 </td>
@@ -223,15 +336,8 @@
               </li>
               <li>
                 <label>[% T.cfg_claims_label | $raw %]</label>
-                <div class="checkbox-list" style="margin-left:21rem">
-                  [% FOREACH claim IN claims_catalog %]
-                    [% SET label_key = 'claim_label_' _ claim.key %]
-                    <label style="display:block;float:none;width:auto;margin:0 0 .3em;text-align:left;font-weight:normal">
-                      <input type="checkbox" name="allowed_claims" value="[% claim.key | html %]"
-                        [% IF edit_client.allowed_claims.grep('^' _ claim.key _ '$').size %]checked[% END %]>
-                      [% T.$label_key | $raw %]
-                    </label>
-                  [% END %]
+                <div style="margin-left:21rem;max-width:60rem">
+                  [% PROCESS claims_config_widget claims = edit_client.allowed_claims %]
                 </div>
               </li>
               <li>
@@ -311,14 +417,8 @@
               </li>
               <li>
                 <label>[% T.cfg_claims_label | $raw %]</label>
-                <div class="checkbox-list" style="margin-left:21rem">
-                  [% FOREACH claim IN claims_catalog %]
-                    [% SET label_key = 'claim_label_' _ claim.key %]
-                    <label style="display:block;float:none;width:auto;margin:0 0 .3em;text-align:left;font-weight:normal">
-                      <input type="checkbox" name="allowed_claims" value="[% claim.key | html %]">
-                      [% T.$label_key | $raw %]
-                    </label>
-                  [% END %]
+                <div style="margin-left:21rem;max-width:60rem">
+                  [% PROCESS claims_config_widget claims = [] %]
                 </div>
               </li>
               <li>
@@ -358,6 +458,162 @@
     </div>
   </div>
 </div>
+
+<script>
+    $(document).ready(function () {
+        var $widget = $('.oauthprovider-claims-widget');
+        if ( !$widget.length ) { return; }
+
+        var $table       = $widget.find('.oauthprovider-claims-table tbody');
+        var $dupError    = $widget.find('.claims-duplicate-error');
+        var $modal       = $('#oauthprovider-claim-modal');
+        var $modalType    = $('#oauthprovider-modal-type');
+        var $modalField   = $('#oauthprovider-modal-field-source');
+        var $modalAttr    = $('#oauthprovider-modal-attribute-source');
+        var $modalStatic  = $('#oauthprovider-modal-static-value');
+        var $modalName    = $('#oauthprovider-modal-claim-name');
+        var $modalError   = $('#oauthprovider-claim-modal .oauthprovider-modal-error');
+        var $modalConfirm = $('#oauthprovider-modal-confirm');
+
+        // Populate the two live selects from their hidden "template" selects
+        // (rendered server-side with the correct translated labels/attribute
+        // descriptions) - done once, they don't change during this page view.
+        $modalField.html( $('#oauthprovider-field-catalog-template').html() );
+        $modalAttr.html( $('#oauthprovider-attribute-catalog-template').html() );
+
+        function currentClaimNames() {
+            var names = [];
+            $table.find('.claim-name-input').each(function () {
+                var v = $.trim( $(this).val() );
+                if ( v.length ) { names.push(v); }
+            });
+            return names;
+        }
+
+        function refreshDuplicateState() {
+            var seen = {};
+            var duplicates = {};
+            $table.find('.claim-name-input').each(function () {
+                var v = $.trim( $(this).val() );
+                if ( !v.length ) { return; }
+                if ( seen[v] ) { duplicates[v] = true; }
+                seen[v] = true;
+            });
+
+            var anyDuplicate = false;
+            $table.find('.claim-name-input').each(function () {
+                var v = $.trim( $(this).val() );
+                if ( v.length && duplicates[v] ) {
+                    $(this).css('border-color', '#a12622');
+                    anyDuplicate = true;
+                } else {
+                    $(this).css('border-color', '');
+                }
+            });
+
+            $dupError.toggle(anyDuplicate);
+            $widget.closest('form').find('[type=submit]').prop('disabled', anyDuplicate);
+            return anyDuplicate;
+        }
+
+        function updateModalRowVisibility() {
+            var type = $modalType.val();
+            $('.oauthprovider-modal-field-row').toggle(type === 'field');
+            $('.oauthprovider-modal-attribute-row').toggle(type === 'attribute');
+            $('.oauthprovider-modal-static-row').toggle(type === 'static');
+        }
+
+        function defaultClaimNameForModal() {
+            var type = $modalType.val();
+            if ( type === 'field' ) { return $modalField.val() || ''; }
+            if ( type === 'attribute' ) { return $modalAttr.val() || ''; }
+            return '';
+        }
+
+        $modalType.on('change', function () {
+            updateModalRowVisibility();
+            $modalName.val( defaultClaimNameForModal() );
+        });
+        $modalField.on('change', function () {
+            if ( $modalType.val() === 'field' ) { $modalName.val( $modalField.val() || '' ); }
+        });
+        $modalAttr.on('change', function () {
+            if ( $modalType.val() === 'attribute' ) { $modalName.val( $modalAttr.val() || '' ); }
+        });
+
+        $modal.on('show.bs.modal', function () {
+            $modalType.val('field');
+            updateModalRowVisibility();
+            $modalStatic.val('');
+            $modalName.val( defaultClaimNameForModal() );
+            $modalError.hide().text('');
+        });
+
+        function sourceDisplayForModal() {
+            var type = $modalType.val();
+            if ( type === 'field' ) { return $modalField.find('option:selected').text(); }
+            if ( type === 'attribute' ) { return $modalAttr.find('option:selected').text(); }
+            return $widget.data('static-label');
+        }
+
+        $modalConfirm.on('click', function () {
+            var type      = $modalType.val();
+            var source    = type === 'field' ? $modalField.val() : ( type === 'attribute' ? $modalAttr.val() : '' );
+            var value     = type === 'static' ? $modalStatic.val() : '';
+            var claimName = $.trim( $modalName.val() );
+
+            if ( !/^[A-Za-z_][A-Za-z0-9_]*$/.test(claimName) ) {
+                $modalError.text( $widget.data('name-hint') ).show();
+                return;
+            }
+            if ( claimName === 'userid' || claimName === 'sub'
+                 || currentClaimNames().indexOf(claimName) !== -1 ) {
+                $modalError.text( $widget.data('duplicate-error') ).show();
+                return;
+            }
+
+            var $row = $(
+                '<tr class="claim-row">' +
+                    '<td class="claim-source-display"></td>' +
+                    '<td>' +
+                        '<input type="hidden" name="claim_type">' +
+                        '<input type="hidden" name="claim_source">' +
+                        '<input type="text" name="claim_name" class="claim-name-input" required pattern="[A-Za-z_][A-Za-z0-9_]*">' +
+                    '</td>' +
+                    '<td><input type="text" name="claim_value" class="claim-value-input"></td>' +
+                    '<td><button type="button" class="btn btn-default btn-xs claims-remove-row"></button></td>' +
+                '</tr>'
+            );
+            $row.find('.claims-remove-row').text( $widget.data('remove-label') );
+            $row.find('.claim-source-display').text( sourceDisplayForModal() );
+            $row.find('input[name=claim_type]').val(type);
+            $row.find('input[name=claim_source]').val(source);
+            $row.find('input[name=claim_name]').val(claimName);
+            var $valueInput = $row.find('input[name=claim_value]').val(value);
+            if ( type !== 'static' ) { $valueInput.css('visibility', 'hidden'); }
+
+            $table.append($row);
+            refreshDuplicateState();
+            $modal.modal('hide');
+        });
+
+        $table.on('click', '.claims-remove-row', function () {
+            $(this).closest('tr').remove();
+            refreshDuplicateState();
+        });
+
+        $table.on('input change', '.claim-name-input', function () {
+            refreshDuplicateState();
+        });
+
+        $widget.closest('form').on('submit', function (e) {
+            if ( refreshDuplicateState() ) { e.preventDefault(); }
+        });
+
+        updateModalRowVisibility();
+        refreshDuplicateState();
+    });
+</script>
 
 [% INCLUDE 'select2.inc' %]
 [% INCLUDE 'intranet-bottom.inc' %]
