@@ -1,10 +1,10 @@
 # koha-plugin-oauth-provider
 
-Turns Koha into an **OAuth2 and OpenID Connect server**: external applications can let a
-library patron log in with their Koha account and then - individually configurable per
-registered application ("client") - fetch user data via a `/userinfo` endpoint, or (with
-`scope=openid`) receive a signed `id_token`. By default, only the account's `userid` is
-released.
+Turns Koha into an **OAuth2 and OpenID Connect server (identity provider)**: external 
+applications can let a library patron log in with their Koha account and then - 
+individually configurable per registered application ("client") - fetch user data via a 
+`/userinfo` endpoint, or (with `scope=openid`) receive a signed `id_token`. By default, 
+only the account's `userid` is released.
 
 `Koha::Plugin::Com::Lmscloud::OAuthProvider`
 
@@ -98,13 +98,13 @@ before the route is even reached, unless patched around.
 
 ## 3. Available claims
 
-Each client has a configurable list of claims, managed as a table in the admin UI (not a
-flat checkbox list): every entry has a **type** - `field` (one of the patron fields listed
-below, from `ClaimsCatalog.pm`), `attribute` (any configured Koha extended patron
-attribute, by code) or `static` (a fixed value, not derived from the patron at all) - plus
-an admin-editable **claim name**, the actual key the value is released under in
-`/userinfo`. Claim names default to the field key/attribute code but can be renamed
-freely, and must be unique within a client (enforced both in the UI and server-side).
+Each client has a configurable list of claims, managed as a table in the admin UI: every 
+entry has a **type** - `field` (one of the patron fields listed below, from `ClaimsCatalog.pm`), 
+`attribute` (any configured Koha extended patron attribute, by code) or `static` (a fixed 
+value, not derived from the patron at all) - plus an admin-editable **claim name**, the 
+actual key the value is released under in `/userinfo`. Claim names default to the field 
+key/attribute code but can be renamed freely, and must be unique within a client (enforced 
+both in the UI and server-side).
 
 Built-in `field` catalog: `cardnumber`, `borrowernumber`, `firstname`, `surname`, `email`,
 `branchcode`, `branchname`, `categorycode`, `category_description`, `dateexpiry`,
@@ -189,16 +189,16 @@ These two fields return data required by the German library e-lending service
 digital media. The checks run **in this exact order** and stop at the first match
 (kept in sync by hand with `C4/External/DivibibPatronStatus.pm` in the LMSCloud fork):
 
-| order | condition                                                          | `status` |
+| order | condition                                                           | `status` |
 |-------|---------------------------------------------------------------------|----------|
-| 1     | has overdues and `OverduesBlockCirc` is `block` or `confirmation`    | `1`      |
-| 2     | debarred/restricted (`is_debarred`)                                  | `1`      |
-| 3     | account expired (`is_expired`)                                       | `-3`     |
-| 4     | no valid address on file (`gonenoaddress`)                            | `1`      |
-| 5     | card marked lost (`lost`)                                              | `1`      |
-| 6     | outstanding fines exceed the `noissuescharge` threshold                 | `4`      |
-| 7     | account locked (too many failed login attempts, `account_locked`)       | `1`      |
-| -     | none of the above apply                                                   | `3`      |
+| 1     | has overdues and `OverduesBlockCirc` is `block` or `confirmation`   | `1`      |
+| 2     | debarred/restricted (`is_debarred`)                                 | `1`      |
+| 3     | account expired (`is_expired`)                                      | `-3`     |
+| 4     | no valid address on file (`gonenoaddress`)                          | `1`      |
+| 5     | card marked lost (`lost`)                                           | `1`      |
+| 6     | outstanding fines exceed the `noissuescharge` threshold             | `4`      |
+| 7     | account locked (too many failed login attempts, `account_locked`)   | `1`      |
+| -     | none of the above apply                                             | `3`      |
 
 The codes `-2` (wrong password), `-1` (wrong credentials) and `0`/`2` (deleted/test
 account) are **not reachable** here at all. 
