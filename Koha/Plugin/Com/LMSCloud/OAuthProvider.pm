@@ -82,7 +82,28 @@ my %DEFAULT_SETTINGS = (
     # OIDC 'iss' claim and to build absolute URLs in the discovery document.
     # Must be set by staff before OIDC (scope=openid) clients are usable.
     issuer_url                => '',
+    # Plugin-wide (not per-client) full-template overrides for the public
+    # pages - empty string means "use the bundled templates/<file>.tt as-is".
+    # See %TEMPLATE_CUSTOMIZATION / render_standalone_template().
+    custom_login_html         => '',
+    custom_otp_html           => '',
+    custom_consent_html       => '',
+    custom_error_html         => '',
 );
+
+# Maps each customizable public page to its template file and the settings
+# key holding its override. Deliberately only these four (login/otp/consent/
+# error) - configure.tt/tool.tt are regular staff-authenticated intranet
+# pages (get_template()), not part of this mechanism at all.
+my %TEMPLATE_CUSTOMIZATION = (
+    login   => { file => 'login.tt',   settings_key => 'custom_login_html' },
+    otp     => { file => 'otp.tt',     settings_key => 'custom_otp_html' },
+    consent => { file => 'consent.tt', settings_key => 'custom_consent_html' },
+    error   => { file => 'error.tt',   settings_key => 'custom_error_html' },
+);
+
+my %TEMPLATE_SETTINGS_KEY_BY_FILE =
+    map { $TEMPLATE_CUSTOMIZATION{$_}{file} => $TEMPLATE_CUSTOMIZATION{$_}{settings_key} } keys %TEMPLATE_CUSTOMIZATION;
 
 # =========================== plugin bootstrap ==============================
 
@@ -957,7 +978,17 @@ sub discovery_document {
 sub render_standalone_template {
     my ( $self, $file, $vars, $lang ) = @_;
 
-    my $path = $self->mbf_path("templates/$file");
+    # A plugin-wide custom override (section "Templates" in general
+    # settings) takes precedence over the bundled file, for the four public
+    # pages listed in %TEMPLATE_CUSTOMIZATION - anything else (there isn't
+    # anything else calling this method today) always uses its file as-is.
+    my $source = $self->mbf_path("templates/$file");
+    my $settings_key = $TEMPLATE_SETTINGS_KEY_BY_FILE{$file};
+    if ($settings_key) {
+        my $custom = $self->settings->{$settings_key};
+        $source = \$custom if defined $custom && length $custom;
+    }
+
     my $output = '';
 
     # ABSOLUTE => 1 lets the template's own
@@ -965,10 +996,15 @@ sub render_standalone_template {
     # following the pattern from
     # https://koha-community.gitlab.io/KohaAdvent/2020-12-08-translate-plugin/)
     # load an absolute-path include; without it Template Toolkit refuses to
-    # PROCESS/INCLUDE anything outside its (here: unset) INCLUDE_PATH.
+    # PROCESS/INCLUDE anything outside its (here: unset) INCLUDE_PATH. Kept
+    # enabled for custom-template sources too (rather than hardening it away)
+    # so a staff-authored override can start from a copy of the bundled
+    # template verbatim and still work - this admin UI already requires the
+    # 'plugins' permission, which can install arbitrary Perl-executing
+    # plugins anyway, so it grants no meaningfully new capability.
     my $tt = Template->new( { ABSOLUTE => 1, ENCODING => 'utf8' } );
     $tt->process(
-        $path,
+        $source,
         {   %$vars,
             LANG       => $lang || 'en',
             PLUGIN_DIR => $self->bundle_path,
@@ -976,6 +1012,79 @@ sub render_standalone_template {
         \$output
     ) or die $tt->error;
     return $output;
+}
+
+# =========================== template customization (global) ===============
+#
+# Lets staff fully override any of the four public-facing page templates
+# (login/otp/consent/error) plugin-wide, edited via a modal per page under
+# *Plugins -> ... -> Configure -> General settings*. Deliberately NOT
+# per-client (see the plugin's design discussion) - these pages are shown
+# before a client is even known to have logged in for consent/otp, and the
+# only page that's ever client-specific in its wording (the client name on
+# login.tt/consent.tt) already gets that via the normal template variables,
+# not via a different template file per client.
+
+sub customizable_template_names { return [ sort keys %TEMPLATE_CUSTOMIZATION ] }
+
+sub _template_settings_key {
+    my ( $self, $name ) = @_;
+    return unless exists $TEMPLATE_CUSTOMIZATION{$name};
+    return $TEMPLATE_CUSTOMIZATION{$name}{settings_key};
+}
+
+sub _template_file_for_name {
+    my ( $self, $name ) = @_;
+    return unless exists $TEMPLATE_CUSTOMIZATION{$name};
+    return $TEMPLATE_CUSTOMIZATION{$name}{file};
+}
+
+# Returns the bundled, as-shipped source of one customizable template (used
+# to pre-fill the "edit" modal when there's no override yet, so staff start
+# from a known-working copy rather than a blank textarea).
+sub default_template_source {
+    my ( $self, $name ) = @_;
+
+    my $file = $self->_template_file_for_name($name) or return '';
+    my $path = $self->mbf_path("templates/$file");
+    return '' unless $path && -e $path;
+
+    open my $fh, '<:encoding(UTF-8)', $path or return '';
+    local $/;
+    my $content = <$fh>;
+    close $fh;
+    return $content;
+}
+
+# $html eq '' (or undef) clears the override, reverting to the bundled file.
+sub save_custom_template {
+    my ( $self, $name, $html ) = @_;
+
+    my $key = $self->_template_settings_key($name) or return;
+    $self->save_settings( { $key => defined $html ? $html : '' } );
+    return 1;
+}
+
+# One row per customizable page, for the admin UI's status table:
+# [{ name, is_custom, source }, ...] - 'source' is the current override if
+# one is set, otherwise the bundled default (see default_template_source).
+sub template_customization_status {
+    my ($self) = @_;
+
+    my $settings = $self->settings;
+    my @rows;
+    for my $name ( @{ $self->customizable_template_names } ) {
+        my $key    = $TEMPLATE_CUSTOMIZATION{$name}{settings_key};
+        my $custom = $settings->{$key};
+        my $is_custom = defined $custom && length $custom;
+        push @rows,
+            {
+            name      => $name,
+            is_custom => $is_custom ? 1 : 0,
+            source    => $is_custom ? $custom : $self->default_template_source($name),
+            };
+    }
+    return \@rows;
 }
 
 # =========================== language detection (public pages) =============
@@ -1085,6 +1194,12 @@ sub configure {
             }
         );
     }
+    elsif ( $action eq 'save_custom_template' ) {
+        $self->save_custom_template( scalar $cgi->param('template_name'), scalar $cgi->param('template_html') );
+    }
+    elsif ( $action eq 'reset_custom_template' ) {
+        $self->save_custom_template( scalar $cgi->param('template_name'), '' );
+    }
 
     print $cgi->redirect(
         -uri => '/cgi-bin/koha/plugins/run.pl?class=' . uri_escape( ref($self) ) . '&method=configure' );
@@ -1108,6 +1223,7 @@ sub _render_configure {
         attribute_types  => $self->patron_attribute_types,
         consent_modes    => $self->consent_modes,
         patron_categories => \@categories,
+        template_customization => $self->template_customization_status,
         settings         => $self->settings,
         base_url         => C4::Context->preference('staffClientBaseURL') || '',
         class_name       => uri_escape( ref($self) ),

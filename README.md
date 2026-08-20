@@ -87,13 +87,13 @@ See the comments in `Controller.pm` for details. Short version:
    `id_token` if the original `scope` included `openid`.
 7. **`GET /userinfo`** with `Authorization: Bearer <access_token>` returns
    `{"userid": "...", "sub": "...", ...whichever extra fields are configured for that
-   client}` - **see section 11 for a Koha core limitation that must be patched around for
+   client}` - **see section 12 for a Koha core limitation that must be patched around for
    this call to work at all when the relying party is itself a Koha instance.**
 
 None of this plugin's routes declare `x-koha-authorization` in `api_routes.json` - the
 same technique Koha's own `/oauth/token` endpoint uses - since they all handle their own
 authentication. That's necessary but not sufficient for `/userinfo` specifically: see
-section 11 for a Koha core behavior that intercepts its `Authorization: Bearer` header
+section 12 for a Koha core behavior that intercepts its `Authorization: Bearer` header
 before the route is even reached, unless patched around.
 
 ## 3. Available claims
@@ -141,19 +141,19 @@ alternate/"B_" address Koha also has, since OIDC's `address` claim models a sing
 address, not two. Every member is omitted individually when empty (all members are
 optional per spec); if the patron has no address information at all, the whole `address`
 claim is `null` rather than an empty object. `scopes_supported` in the discovery document
-(section 10) lists `address` alongside `openid`/`profile` for OIDC client libraries that
+(section 11) lists `address` alongside `openid`/`profile` for OIDC client libraries that
 inspect it, but that's informational only, like the other two: what's actually released
 is governed purely by this per-client admin configuration, same as every other claim in
 this plugin - the `scope` a client requests at `/authorize` is otherwise unused for claim
 selection (it's only inspected for the literal value `openid`, to decide whether to also
-issue a signed `id_token` - see section 10).
+issue a signed `id_token` - see section 11).
 
 ### `phone_number` / `mobile` (OIDC "phone" scope)
 
 `phone_number` maps to Koha's primary phone field (`Koha::Patron::phone` - **not**
 `mobile` or `phonepro`). `mobile` maps to `Koha::Patron::mobile` directly, for clients
 that specifically need the mobile number. `scopes_supported` in the discovery document
-(section 10) lists `phone` alongside the others for the same informational-only reason
+(section 11) lists `phone` alongside the others for the same informational-only reason
 described above for `address`.
 
 ### `attribute`-type claims (Koha extended patron attributes)
@@ -236,7 +236,7 @@ consent screen or authorization code is ever produced. A rejected patron is redi
 straight back to the client's `redirect_uri` with `error=access_denied&state=...` - the
 same outcome as a patron clicking "Deny" on the consent screen - rather than shown a
 Koha-branded error page, since `redirect_uri` is already trusted by that point in the
-flow (see the redirect-vs-error-page reasoning in section 14). External applications that
+flow (see the redirect-vs-error-page reasoning in section 15). External applications that
 already handle a user declining consent therefore need no special-casing to also handle
 a category-based rejection.
 
@@ -305,14 +305,61 @@ a leaked refresh token than a short TTL would on its own.
 ## 8. Why standalone templates instead of Koha chrome
 
 `Koha::Plugins::Base::get_template()` is hardcoded to `type => "intranet"` and there is no
-OPAC-side plugin runner. `login.tt`/`consent.tt`/`error.tt` (under `templates/`) are
-therefore standalone HTML pages rendered directly via Template Toolkit, without Koha
+OPAC-side plugin runner. `login.tt`/`otp.tt`/`consent.tt`/`error.tt` (under `templates/`)
+are therefore standalone HTML pages rendered directly via Template Toolkit, without Koha
 chrome (mirroring the sibling plugin
 [koha-plugin-eid-verification](../koha-plugin-eid-verification)). `configure.tt`/`tool.tt`,
 by contrast, are regular intranet pages (`get_template()`, requiring staff login + the
 `plugins` permission).
 
-## 9. Bilingual UI (English/German)
+## 9. Customizing the public pages (global template overrides)
+
+Each of the four standalone pages from section 8 - `login.tt`, `otp.tt`, `consent.tt`,
+`error.tt` - can be **fully overridden**, plugin-wide, under *Plugins &rarr; OAuth2 /
+OpenID Connect Identity Provider &rarr; Configure &rarr; General settings &rarr;
+Customize pages*. Each page has its own modal with a single textarea containing its
+complete HTML/Template-Toolkit source, pre-filled with the bundled version the first time
+it's opened (so an admin edits a known-working copy rather than starting blank), plus a
+"Reset to default" action that clears the override and reverts to the bundled file.
+
+Deliberately **global, not per-client**: unlike claims (section 3) or consent mode
+(section 5), these pages are shown before - or independently of - which client is
+involved (the error page in particular can be reached without a client ever being
+identified), and the one piece of per-client wording they do need (the application name
+on `login.tt`/`consent.tt`) already comes through the normal template variables, not
+through a different template file per client.
+
+**Storage:** an override is just another value in the plugin's own settings blob
+(`OAuthProvider::save_custom_template` &rarr; `save_settings`), i.e. one row per plugin in
+Koha's generic `plugin_data` table (`plugin_class` = this plugin, `plugin_key` =
+`'settings'`), alongside `issuer_url` and the token-lifetime defaults - not a separate
+table, and not a file on disk. An empty override means "use the bundled
+`templates/<file>.tt` as-is"; `OAuthProvider::render_standalone_template` checks for a
+non-empty override for the requested file and, if present, processes it as an in-memory
+Template Toolkit string (`$tt->process(\$custom_html, ...)`) instead of the bundled file
+path - the same `Template` instance/settings either way, so an override can rely on
+anything the bundled templates rely on (e.g. `[% PROCESS "$PLUGIN_DIR/i18n/${LANG}.inc" %]`
+for translated strings).
+
+**Security note:** `ABSOLUTE => 1` (needed for that i18n `PROCESS`, see section 10) stays
+enabled for custom sources too, rather than being hardened away for this admin-supplied
+HTML - so a custom template could, in principle, `[% INCLUDE %]`/`[% PROCESS %]` an
+arbitrary absolute path on the server. This was a deliberate trade-off, not an oversight:
+reaching this configuration screen already requires the `plugins` permission, which lets
+staff upload an entirely new plugin with unrestricted Perl execution anyway - a hardened,
+separate `Template` instance for this one feature would not meaningfully shrink what such
+a user could already do.
+
+**The real risk in practice is a broken login flow, not a security one:** each of the
+four pages' forms must keep specific hidden fields with specific names for the OAuth2
+flow to keep working at all (e.g. `login.tt` needs `stage`, `client_id`, `redirect_uri`,
+`state`, `scope`, `code_challenge`, `code_challenge_method`, `nonce`, plus visible
+`userid`/`password` fields) - the admin UI states the exact requirement for each page next
+to its editor, but doesn't validate it, so a custom template missing one of these breaks
+the login flow for every client, silently, until an admin notices and either fixes it or
+resets to default.
+
+## 10. Bilingual UI (English/German)
 
 `configure.tt`, `tool.tt`, `login.tt`, `consent.tt` and `error.tt` render in English or
 German depending on Koha's configured interface language, with the strings being
@@ -366,7 +413,7 @@ in Koha core for valid codes, e.g. `fr-FR`) with the same keys as `default.inc`,
 sure that language is enabled in the `OPACLanguages`/`language` system preferences -
 nothing else needs to change.
 
-## 10. Full OpenID Connect
+## 11. Full OpenID Connect
 
 Beyond plain OAuth2 (sections 1-7), the plugin supports OpenID Connect when the client
 includes `scope=openid` when calling `/authorize`:
@@ -419,7 +466,7 @@ plugin's own discovery URL
 (`.../api/v1/contrib/oauthprovider/.well-known/openid-configuration`) instead of relying
 on pure issuer auto-discovery, which most OIDC client libraries offer as an option.
 
-## 11. Known limitation: `/userinfo` requires a small Koha core patch
+## 12. Known limitation: `/userinfo` requires a small Koha core patch
 
 **`GET /userinfo` does not work out of the box** on the Koha instance hosting this
 plugin, for *any* caller, regardless of what OAuth2/OIDC client library is used. This was
@@ -471,7 +518,7 @@ the Koha instance(s) **hosting this plugin** (acting as the IdP) - not to relyin
 Koha instances that merely call out to `/userinfo` as a client.
 
 **Without this patch, `/userinfo` cannot be used at all**, by any client - the `id_token`
-stays deliberately minimal regardless (section 10), so it is not an alternative source
+stays deliberately minimal regardless (section 11), so it is not an alternative source
 for the per-client-configured claims (section 3) for OIDC clients either. A **pure OAuth2
 client that never requests `openid`** is affected most severely: it never receives an
 `id_token` in the first place, so `/userinfo` is its *only* possible source of claims -
@@ -480,7 +527,7 @@ about them. Applying this patch (or an equivalent core fix) on the IdP-hosting i
 is therefore effectively **required** for this plugin to be useful beyond bare
 authentication.
 
-## 12. Installation
+## 13. Installation
 
 1. Package this repository as a `.kpz`:
    ```bash
@@ -490,14 +537,17 @@ authentication.
    plugin* (`enable_plugins` must be enabled in `koha-conf.xml`).
 3. Under *Plugins &rarr; OAuth2 / OpenID Connect Identity Provider &rarr; Configure*, set
    the "Public base URL of this plugin" (only required for OIDC/`scope=openid`, see
-   section 10) and register an application: name, redirect URIs, which claims it may
+   section 11) and register an application: name, redirect URIs, which claims it may
    receive (section 3), consent mode (section 5), and optionally which patron categories
    may/may not authenticate for it at all (section 4). The client ID and client secret
    are shown - the secret **only once**, after that only its hash exists in the database.
-4. **Apply the core patch from section 11** on this same Koha instance - without it,
+4. **Apply the core patch from section 12** on this same Koha instance - without it,
    `/userinfo` cannot be called at all, by any client.
-5. For a real `/.well-known/openid-configuration` at the domain root: set up the
-   webserver rewrite from section 10 (optional, not part of the plugin).
+5. Optionally, under the same *Configure* page's *Customize pages* section, override the
+   login/otp/consent/error pages' HTML (section 9) - not needed for a working setup, the
+   bundled pages work as-is.
+6. For a real `/.well-known/openid-configuration` at the domain root: set up the
+   webserver rewrite from section 11 (optional, not part of the plugin).
 
 Because Koha plugins cannot declare their own CPAN dependencies (plugin code only runs
 with modules already present on the server, see `Koha/Plugins.pm`/
@@ -508,7 +558,7 @@ RS256, see section 1) or for the `fsk`/`status` claims (deliberately reimplement
 instead of depending on the LMSCloud-fork-only `C4::External::DivibibPatronStatus` - see
 section 3).
 
-## 13. Example: token and userinfo calls
+## 14. Example: token and userinfo calls
 
 ```bash
 # Step 4: exchange the code for a token (assuming scope=openid at step 1)
@@ -520,18 +570,18 @@ curl -X POST https://opac.example.org/api/v1/contrib/oauthprovider/token \
 # -> {"access_token":"...","token_type":"Bearer","expires_in":3600,
 #     "refresh_token":"...","id_token":"eyJ..."}
 
-# Step 5: fetch user data - requires the core patch from section 11 to be applied,
+# Step 5: fetch user data - requires the core patch from section 12 to be applied,
 # otherwise Koha's own REST auth layer rejects this with 401 before it ever reaches
-# the plugin (see section 11 for why)
+# the plugin (see section 12 for why)
 curl https://opac.example.org/api/v1/contrib/oauthprovider/userinfo \
   -H "Authorization: Bearer <access_token>"
 # -> {"userid":"jdoe","sub":"42"}
 
-# Discovery document (plugin's own URL, see section 10 for the webserver rewrite)
+# Discovery document (plugin's own URL, see section 11 for the webserver rewrite)
 curl https://opac.example.org/api/v1/contrib/oauthprovider/.well-known/openid-configuration
 ```
 
-## 14. Security
+## 15. Security
 
 - `client_secret` is never stored in plaintext (bcrypt via
   `Koha::AuthUtils::hash_password`, same pattern as `Koha::ApiKey`).
@@ -558,7 +608,7 @@ curl https://opac.example.org/api/v1/contrib/oauthprovider/.well-known/openid-co
   through this plugin with just their password - the same one-time-code challenge Koha's
   own staff login would require is enforced here too.
 
-## 15. What has been tested, and known remaining gaps
+## 16. What has been tested, and known remaining gaps
 
 Unlike when this plugin was first written, the full flow has since been exercised against
 **real, separately hosted Koha instances** acting as both IdP (running this plugin) and
@@ -569,7 +619,7 @@ OIDC client actually sends (including reverse-proxy/mount-prefix quirks in
 matching semantics, the `auth.register` interface restriction (auto-registration is
 OPAC-only in Koha core unless a domain explicitly sets `auto_register_staff`), the
 `mapping`/`matchpoint` interaction on the relying-party side, and - the big one - the
-`/userinfo` Bearer-token collision documented in section 11.
+`/userinfo` Bearer-token collision documented in section 12.
 
 **Verified this way:** the complete authorize &rarr; login &rarr; consent &rarr; token
 &rarr; userinfo round trip end-to-end; `upgrade()` migrations through the versions this
@@ -601,8 +651,13 @@ login/consent pages on real Koha instances; and client-secret verification/rotat
   output on real patron/fines/overdues data - not part of this session's testing.
 - `attribute`-type claims (section 3) against a patron with a **repeatable** extended
   attribute type carrying multiple values.
+- The template-override feature (section 9): verified so far only by parsing/rendering
+  the admin UI's own markup with a real Template Toolkit engine outside of Koha (correct
+  modal wiring, reset-button visibility, textarea count/escaping) - not yet exercised
+  end-to-end against a real Koha instance (saving an override, confirming it's actually
+  served on the next `/authorize`/`/userinfo` call, resetting back to default).
 
-## 16. File overview
+## 17. File overview
 
 ```
 Koha/Plugin/Com/LMSCloud/
@@ -617,16 +672,18 @@ Koha/Plugin/Com/LMSCloud/
     │                                  # (field/attribute/static claim types)
     ├── api_routes.json               # OpenAPIv2 fragment: /authorize,/token,/userinfo,
     │                                  # /.well-known/openid-configuration,/jwks
-    │                                  # ("x-plugin-owns-auth" on /userinfo - section 11)
+    │                                  # ("x-plugin-owns-auth" on /userinfo - section 12)
     ├── configure.tt                  # Staff admin UI: client management, claims table +
-    │                                  # "add claim" modal, consent mode, TTL overrides
+    │                                  # "add claim" modal, consent mode, TTL overrides,
+    │                                  # "Customize pages" template-override modals (section 9)
     ├── tool.tt                       # Staff tool: manual cleanup, active tokens
     ├── i18n/
     │   ├── default.inc                # English strings (base/fallback)
     │   └── de-DE.inc                   # German strings
     └── templates/
-        ├── login.tt                  # Standalone login page (public, no Koha chrome)
-        ├── otp.tt                    # Standalone 2FA one-time-code page (public)
-        ├── consent.tt                 # Standalone consent page (public)
-        └── error.tt                   # Standalone error page (public)
+        ├── login.tt                  # Standalone login page (public, no Koha chrome) -
+        │                              # bundled default; overridable, see section 9
+        ├── otp.tt                    # Standalone 2FA one-time-code page (public) - ditto
+        ├── consent.tt                 # Standalone consent page (public) - ditto
+        └── error.tt                   # Standalone error page (public) - ditto
 ```

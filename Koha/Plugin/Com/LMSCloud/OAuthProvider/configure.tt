@@ -199,6 +199,75 @@
         </fieldset>
       </form>
 
+      <h2>[% T.cfg_templates_heading | $raw %]</h2>
+      <p class="hint">[% T.cfg_templates_hint | $raw %]</p>
+      <table class="table">
+        <thead>
+          <tr>
+            <th>[% T.cfg_templates_th_page | $raw %]</th>
+            <th>[% T.cfg_templates_th_status | $raw %]</th>
+            <th>[% T.cfg_templates_th_actions | $raw %]</th>
+          </tr>
+        </thead>
+        <tbody>
+          [% FOREACH tpl IN template_customization %]
+            [% SET label_key = 'cfg_template_label_' _ tpl.name %]
+            <tr>
+              <td>[% T.$label_key | $raw %]</td>
+              <td>[% IF tpl.is_custom %][% T.cfg_template_status_custom | $raw %][% ELSE %]<em>[% T.cfg_template_status_default | $raw %]</em>[% END %]</td>
+              <td>
+                <a href="#" class="btn btn-default btn-xs" data-toggle="modal" data-target="#oauthprovider-template-modal-[% tpl.name | html %]">
+                  [% T.cfg_template_edit | $raw %]
+                </a>
+              </td>
+            </tr>
+          [% END %]
+        </tbody>
+      </table>
+
+      [% FOREACH tpl IN template_customization %]
+        [% SET label_key = 'cfg_template_label_' _ tpl.name %]
+        [% SET hint_key  = 'cfg_template_hint_' _ tpl.name %]
+        <div class="modal" id="oauthprovider-template-modal-[% tpl.name | html %]" tabindex="-1" role="dialog">
+          <div class="modal-dialog modal-lg" role="document">
+            <div class="modal-content">
+              <div class="modal-header">
+                <button type="button" class="close" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">&times;</span></button>
+                <h4 class="modal-title">[% T.$label_key | $raw %]</h4>
+              </div>
+              <form method="post">
+                <input type="hidden" name="class" value="[% plugin_class | html %]">
+                <input type="hidden" name="method" value="configure">
+                <input type="hidden" name="action" value="save_custom_template">
+                <input type="hidden" name="template_name" value="[% tpl.name | html %]">
+                <div class="modal-body">
+                  <div class="hint">[% T.$hint_key | $raw %]</div>
+                  <textarea name="template_html" rows="28" style="width:100%;box-sizing:border-box;font-family:monospace;font-size:0.85em;">[% tpl.source | html %]</textarea>
+                </div>
+                <div class="modal-footer">
+                  [% IF tpl.is_custom %]
+                    <button type="submit" form="oauthprovider-template-reset-[% tpl.name | html %]" class="btn btn-default"
+                            onclick="return confirm('[% T.cfg_template_confirm_reset | html %]');">
+                      [% T.cfg_template_reset | $raw %]
+                    </button>
+                  [% END %]
+                  <button type="button" class="btn btn-default" data-dismiss="modal">[% T.cfg_cancel | $raw %]</button>
+                  <button type="submit" class="btn btn-primary">[% T.common_save | $raw %]</button>
+                </div>
+              </form>
+              [% IF tpl.is_custom %]
+                <form method="post" id="oauthprovider-template-reset-[% tpl.name | html %]" style="display:none">
+                  <input type="hidden" name="class" value="[% plugin_class | html %]">
+                  <input type="hidden" name="method" value="configure">
+                  <input type="hidden" name="action" value="reset_custom_template">
+                  <input type="hidden" name="template_name" value="[% tpl.name | html %]">
+                </form>
+              [% END %]
+            </div>
+          </div>
+        </div>
+      [% END %]
+
       <h2>[% T.cfg_apps_heading | $raw %]</h2>
 
       [% IF new_secret %]
