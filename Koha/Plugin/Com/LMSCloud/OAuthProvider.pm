@@ -64,7 +64,7 @@ our $metadata = {
                       . 'per-client-configurable user data via /userinfo (and, with '
                       . 'scope=openid, a signed id_token).',
     date_authored   => '2026-08-04',
-    date_updated    => '2026-08-04',
+    date_updated    => '2026-08-20',
     minimum_version => '22.11',
     maximum_version => undef,
     version         => $VERSION,
