@@ -1,4 +1,4 @@
-package Koha::Plugin::Com::Lmscloud::OAuthProvider::ClaimsCatalog;
+package Koha::Plugin::Com::LMSCloud::OAuthProvider::ClaimsCatalog;
 
 # Static allow-list of patron fields that MAY be released to OAuth clients.
 # 'userid' is deliberately not part of this catalog: it is always released,

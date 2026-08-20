@@ -1,7 +1,7 @@
 {
     "/authorize": {
         "get": {
-            "x-mojo-to": "Com::Lmscloud::OAuthProvider::Controller#authorize_get",
+            "x-mojo-to": "Com::LMSCloud::OAuthProvider::Controller#authorize_get",
             "operationId": "oauthProviderAuthorizeGet",
             "tags": ["oauthprovider"],
             "produces": ["text/html"],
@@ -21,7 +21,7 @@
             }
         },
         "post": {
-            "x-mojo-to": "Com::Lmscloud::OAuthProvider::Controller#authorize_post",
+            "x-mojo-to": "Com::LMSCloud::OAuthProvider::Controller#authorize_post",
             "operationId": "oauthProviderAuthorizePost",
             "tags": ["oauthprovider"],
             "produces": ["text/html"],
@@ -49,7 +49,7 @@
     },
     "/token": {
         "post": {
-            "x-mojo-to": "Com::Lmscloud::OAuthProvider::Controller#token",
+            "x-mojo-to": "Com::LMSCloud::OAuthProvider::Controller#token",
             "operationId": "oauthProviderToken",
             "tags": ["oauthprovider"],
             "produces": ["application/json"],
@@ -71,7 +71,7 @@
     },
     "/userinfo": {
         "get": {
-            "x-mojo-to": "Com::Lmscloud::OAuthProvider::Controller#userinfo",
+            "x-mojo-to": "Com::LMSCloud::OAuthProvider::Controller#userinfo",
             "x-plugin-owns-auth": true,
             "operationId": "oauthProviderUserinfo",
             "tags": ["oauthprovider"],
@@ -85,7 +85,7 @@
     },
     "/.well-known/openid-configuration": {
         "get": {
-            "x-mojo-to": "Com::Lmscloud::OAuthProvider::Controller#discovery",
+            "x-mojo-to": "Com::LMSCloud::OAuthProvider::Controller#discovery",
             "operationId": "oauthProviderDiscovery",
             "tags": ["oauthprovider"],
             "produces": ["application/json"],
@@ -97,7 +97,7 @@
     },
     "/jwks": {
         "get": {
-            "x-mojo-to": "Com::Lmscloud::OAuthProvider::Controller#jwks",
+            "x-mojo-to": "Com::LMSCloud::OAuthProvider::Controller#jwks",
             "operationId": "oauthProviderJwks",
             "tags": ["oauthprovider"],
             "produces": ["application/json"],

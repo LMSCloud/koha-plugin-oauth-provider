@@ -6,7 +6,7 @@ individually configurable per registered application ("client") - fetch user dat
 `/userinfo` endpoint, or (with `scope=openid`) receive a signed `id_token`. By default, 
 only the account's `userid` is released.
 
-`Koha::Plugin::Com::Lmscloud::OAuthProvider`
+`Koha::Plugin::Com::LMSCloud::OAuthProvider`
 
 ## 1. Why this architecture
 
@@ -325,7 +325,7 @@ plugin follows the lighter approach from
 a plain per-plugin `T` string hash, selected at render time via the interface's `LANG`.
 
 ```
-Koha/Plugin/Com/Lmscloud/OAuthProvider/i18n/
+Koha/Plugin/Com/LMSCloud/OAuthProvider/i18n/
 ├── default.inc   # English (base/fallback)
 └── de-DE.inc      # German
 ```
@@ -605,7 +605,7 @@ login/consent pages on real Koha instances; and client-secret verification/rotat
 ## 16. File overview
 
 ```
-Koha/Plugin/Com/Lmscloud/
+Koha/Plugin/Com/LMSCloud/
 ├── OAuthProvider.pm                 # Main plugin: metadata, install/upgrade/uninstall,
 │                                     # client CRUD, claim-config sanitization, consent
 │                                     # persistence, TTL resolution, code/token management,

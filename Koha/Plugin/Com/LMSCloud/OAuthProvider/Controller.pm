@@ -1,4 +1,4 @@
-package Koha::Plugin::Com::Lmscloud::OAuthProvider::Controller;
+package Koha::Plugin::Com::LMSCloud::OAuthProvider::Controller;
 
 use Modern::Perl;
 
@@ -17,10 +17,10 @@ use Koha::Patrons;
 # Mojolicious autoloads this controller purely off the x-mojo-to string in
 # api_routes.json; it does not guarantee the main plugin package is loaded,
 # so pull it in explicitly (same pattern as the eID-verification plugin).
-use Koha::Plugin::Com::Lmscloud::OAuthProvider;
-use Koha::Plugin::Com::Lmscloud::OAuthProvider::ClaimsCatalog;
+use Koha::Plugin::Com::LMSCloud::OAuthProvider;
+use Koha::Plugin::Com::LMSCloud::OAuthProvider::ClaimsCatalog;
 
-use constant PLUGIN_CLASS => 'Koha::Plugin::Com::Lmscloud::OAuthProvider';
+use constant PLUGIN_CLASS => 'Koha::Plugin::Com::LMSCloud::OAuthProvider';
 
 # =========================== GET /authorize ==============================
 
@@ -526,7 +526,7 @@ sub userinfo {
     }
 
     my $claims =
-        Koha::Plugin::Com::Lmscloud::OAuthProvider::ClaimsCatalog->build_claims( $patron, $client->{allowed_claims} );
+        Koha::Plugin::Com::LMSCloud::OAuthProvider::ClaimsCatalog->build_claims( $patron, $client->{allowed_claims} );
 
     return $c->render( json => $claims );
 }

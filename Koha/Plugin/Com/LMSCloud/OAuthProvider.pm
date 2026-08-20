@@ -1,4 +1,4 @@
-package Koha::Plugin::Com::Lmscloud::OAuthProvider;
+package Koha::Plugin::Com::LMSCloud::OAuthProvider;
 
 # Koha plugin turning Koha into an OAuth2 / OpenID Connect authorization
 # server: external applications can let a patron log in with their library
@@ -39,7 +39,7 @@ use Koha::AuthUtils;
 use Koha::Patron::Attribute::Types;
 use Koha::Patron::Categories;
 use Koha::Token;
-use Koha::Plugin::Com::Lmscloud::OAuthProvider::ClaimsCatalog;
+use Koha::Plugin::Com::LMSCloud::OAuthProvider::ClaimsCatalog;
 
 # Charset used for all generated secrets/codes/tokens: they travel in URL
 # query strings (authorization code), HTTP headers (Bearer access token) and
@@ -112,7 +112,7 @@ sub api_routes {
     my $spec = try {
         decode_json($json);
     } catch {
-        warn "Koha::Plugin::Com::Lmscloud::OAuthProvider: invalid api_routes.json: $_";
+        warn "Koha::Plugin::Com::LMSCloud::OAuthProvider: invalid api_routes.json: $_";
         +{};    # '+' forces hashref parsing, not an empty block
     };
 
@@ -518,7 +518,7 @@ sub _sanitize_claim_configs {
         if ( $type eq 'field' ) {
             next
                 unless defined $source
-                && Koha::Plugin::Com::Lmscloud::OAuthProvider::ClaimsCatalog->is_valid_key($source);
+                && Koha::Plugin::Com::LMSCloud::OAuthProvider::ClaimsCatalog->is_valid_key($source);
             $sanitized_entry = { type => 'field', source => $source, claim_name => $claim_name };
         }
         elsif ( $type eq 'attribute' ) {
@@ -928,7 +928,7 @@ sub discovery_document {
     my ($self) = @_;
 
     my $issuer = $self->settings->{issuer_url};
-    my @claims = ( 'sub', 'userid', Koha::Plugin::Com::Lmscloud::OAuthProvider::ClaimsCatalog->valid_keys );
+    my @claims = ( 'sub', 'userid', Koha::Plugin::Com::LMSCloud::OAuthProvider::ClaimsCatalog->valid_keys );
 
     return {
         issuer                                => $issuer,
@@ -1104,7 +1104,7 @@ sub _render_configure {
 
     $template->param(
         clients          => $self->list_clients,
-        claims_catalog   => Koha::Plugin::Com::Lmscloud::OAuthProvider::ClaimsCatalog->catalog,
+        claims_catalog   => Koha::Plugin::Com::LMSCloud::OAuthProvider::ClaimsCatalog->catalog,
         attribute_types  => $self->patron_attribute_types,
         consent_modes    => $self->consent_modes,
         patron_categories => \@categories,
