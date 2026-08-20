@@ -106,13 +106,16 @@ actual key the value is released under in `/userinfo`. Claim names default to th
 key/attribute code but can be renamed freely, and must be unique within a client (enforced 
 both in the UI and server-side).
 
-Built-in `field` catalog: `cardnumber`, `borrowernumber`, `firstname`, `surname`, `email`,
-`branchcode`, `branchname`, `categorycode`, `category_description`, `dateexpiry`,
-`dateofbirth`, `age`, `address`, `phone_number`, `mobile`, `sex`, `flags` (this patron's
-own userflags bitmask on *this* Koha - not to be confused with granting permissions on a
-relying party), `lang`, `fsk`, `status`. `userid` is not a catalog entry and is **always**
-released, as is `sub` (the immutable `borrowernumber`, as a string - in case staff ever
-rename a `userid`, and because OIDC requires a stable `sub` claim).
+Built-in `field` catalog: `cardnumber`, `borrowernumber`, `title`, `firstname`, `surname`,
+`email`, `branchcode`, `branchname`, `categorycode`, `category_description`, `dateexpiry`,
+`debarred`, `debarredcomment`, `dateofbirth`, `age`, `address`, `streetnumber`,
+`streettype`, `street_name`, `address2`, `city`, `state`, `zipcode`, `country`,
+`contactname`, `contactfirstname`, `contacttitle`, `relationship`, `phone_number`,
+`mobile`, `sex`, `flags` (this patron's own userflags bitmask on *this* Koha - not to be
+confused with granting permissions on a relying party), `lang`, `fsk`, `status`, `sort1`,
+`sort2`. `userid` is not a catalog entry and is **always** released, as is `sub` (the
+immutable `borrowernumber`, as a string - in case staff ever rename a `userid`, and
+because OIDC requires a stable `sub` claim).
 
 `age` is computed via `Koha::Patron::get_age` (years as of today, derived from
 `dateofbirth`) and is released as `null` if the patron has no date of birth on file.
@@ -147,6 +150,22 @@ is governed purely by this per-client admin configuration, same as every other c
 this plugin - the `scope` a client requests at `/authorize` is otherwise unused for claim
 selection (it's only inspected for the literal value `openid`, to decide whether to also
 issue a signed `id_token` - see section 11).
+
+The individual base/home address columns behind the composed claim above are also
+available standalone, for clients that would rather receive the constituent parts than
+the composed OIDC object: `streetnumber`, `streettype` (an authorised value code, not a
+translated description), `street_name` (Koha's own `address` column - the street name
+without the house number; named differently here to avoid colliding with the composed
+`address` claim's key), `address2`, `city`, `state`, `zipcode`, `country`. These are
+released raw and unformatted, with no `null`-if-empty-object handling - each is simply
+whatever value (or `null`) the corresponding column holds.
+
+`debarred` (the date until which the patron is restricted - checkouts/holds blocked -
+`null` if not currently restricted) and `debarredcomment` (the staff-entered reason)
+mirror Koha's own borrower-restriction fields. `contactname`, `contactfirstname`,
+`contacttitle` and `relationship` expose the guarantor/contact-person fields Koha uses for
+child and organisational patrons. `sort1` and `sort2` are Koha's two free-form,
+library-defined fields, released as-is.
 
 ### `phone_number` / `mobile` (OIDC "phone" scope)
 
@@ -244,6 +263,44 @@ a category-based rejection.
 against the client's `allowed_categories`/`denied_categories` (both JSON arrays of
 category codes, sanitized against `Koha::Patron::Categories` on save so a hand-crafted
 POST can't smuggle in a nonexistent code).
+
+### Login-blocking checks (patron status)
+
+A second, independent per-client gate, checked at the same point (right after
+`checkpw_internal` succeeds, before 2FA/consent/code issuance) and with the same
+rejection behavior (redirect to `redirect_uri` with `error=access_denied`, never a
+Koha-branded error page - see the reasoning in section 15). Unlike the category
+allow/deny-list, this is a fixed set of **patron-status** checks, each individually
+toggled via a checkbox under **Block login on** in the admin UI - all checked by default,
+since these are conditions a library would normally want enforced:
+
+| Check | What it tests |
+|---|---|
+| Account restricted | `Koha::Patron::is_debarred` - at least one active restriction |
+| Account expired | `Koha::Patron::is_expired` (`dateexpiry`) |
+| Fees over limit | the patron's own `Koha::Account::non_issues_charges` exceeds the `noissuescharge` system preference |
+| Password expired | `Koha::Patron::password_expired` |
+| Guarantees' fees over limit | patrons this patron is a guarantor *for* (`guarantee_relationships`) - their combined `non_issues_charges` exceeds the `NoIssuesChargeGuarantees` system preference |
+| Guarantors' fees over limit | this patron's own guarantor(s), including whatever those guarantors' *other* guarantees owe (`Koha::Patron::relationships_debt`) - exceeds the `NoIssuesChargeGuarantorsWithGuarantees` system preference |
+| Card reported lost | `Koha::Patron::lost` |
+| Address needs correction | `Koha::Patron::gonenoaddress` |
+
+The fee-limit and guarantor-debt checks deliberately reuse the exact same logic
+`C4::Circulation::CanBookBeIssued` applies when deciding whether a patron can check out
+an item (`DEBT`/`DEBT_GUARANTEES`/`DEBT_GUARANTORS`), rather than reimplementing the
+math - `relationships_debt` in particular is a public `Koha::Patron` method, not
+something this plugin computes itself.
+
+`OAuthProvider::login_blocked_reason($client, $patron)` implements the check against the
+client's `login_block_checks` (a JSON array of enabled check keys; a `NULL` column - both
+a pre-migration row and a freshly created one before its first edit - means *every* check
+enabled, the fail-safe default, unlike the empty-means-unrestricted convention
+`allowed_categories`/`denied_categories` use).
+
+This is separate from, and does not replace, the unconditional `account_locked` /
+`login_attempts` enforcement described in section 15 - that one is not configurable per
+client, since a Koha-wide failed-login lockout should never be bypassable by any client's
+settings.
 
 ## 5. Consent management
 
@@ -607,12 +664,22 @@ curl https://opac.example.org/api/v1/contrib/oauthprovider/.well-known/openid-co
 - A patron with 2FA enabled on the IdP's Koha (section 6) cannot fully authenticate
   through this plugin with just their password - the same one-time-code challenge Koha's
   own staff login would require is enforced here too.
+- `Controller::_handle_login` calls `C4::Auth::checkpw_internal` directly, not
+  `C4::Auth::checkpw` - and `checkpw_internal` only verifies the password, nothing else.
+  `account_locked` and `login_attempts` (Koha's own failed-login-attempts lockout) live in
+  `checkpw`, one level up, so they are replicated explicitly here: `account_locked` is
+  checked *before* the password is verified at all (matching `checkpw`'s own precedence,
+  so a locked account never succeeds even with the correct password), a wrong password
+  increments `login_attempts`, and a successful login resets it to 0. This is
+  unconditional, not a per-client setting - see the per-client checks in section 4 for
+  everything that *is* configurable.
 
 ## 16. What has been tested, and known remaining gaps
 
 Unlike when this plugin was first written, the full flow has since been exercised against
 **real, separately hosted Koha instances** acting as both IdP (running this plugin) and
-relying party (Koha's own built-in OIDC/OAuth2 client) - across multiple Koha versions. That process surfaced and fixed a number of real issues that couldn't have been
+relying party (Koha's own built-in OIDC/OAuth2 client) - across multiple Koha versions. 
+That process surfaced and fixed a number of real issues that couldn't have been
 found by code review alone, among them: the exact `redirect_uri` string a relying party's
 OIDC client actually sends (including reverse-proxy/mount-prefix quirks in
 `url_for('current')` vs `req->url->path`), `identity_provider_domains` catch-all/wildcard
@@ -630,25 +697,21 @@ access-control gate against real patron/category data; template rendering of
 `configure.tt` (including the claims table + "add claim" modal) and the public
 login/consent pages on real Koha instances; and client-secret verification/rotation.
 
+**Verified on a real instance:** `Mojo::JWT`'s `decode()` does raise on an expired `exp`
+claim, caught via `try`/`catch` in `verify_login_ticket` (confirmed directly against a
+real Koha instance's `_ticket_secret`, not just by reading the `Mojo::JWT` source).
+
 **Still not specifically verified:**
-- The 2FA (section 6) one-time-code challenge against a real TOTP-enrolled account.
-- The "remember" and "never" consent modes (section 5) and the per-client token-lifetime
-  override (section 7) end-to-end, though their code paths share the same
-  already-verified plumbing as the rest of the flow.
-- The exact return behavior of `C4::Auth::checkpw_internal` in edge cases (e.g. expired
-  password, locked account) - the code assumes the confirmed normal case
-  `(1, $cardnumber, $userid, $patron)` or `0`; edge cases should be checked before
-  production use if not already covered by Koha's own login-attempt handling.
-- The behavior of `Mojo::JWT`'s `decode()` on expired tokens specifically (the code
-  assumes an expired `exp` claim raises an exception, which is caught via `try`/`catch`).
+- The new per-client login-blocking checks (section 4) against real patron data for each
+  condition - in particular the two guarantor/guarantee fee-limit checks
+  (`NoIssuesChargeGuarantees` / `NoIssuesChargeGuarantorsWithGuarantees`), which need a
+  patron actually set up in a guarantor/guarantee relationship with fees on the relevant
+  side to exercise at all.
 - Interoperability with a **non-Koha** OIDC client library (e.g. whether it accepts
   HS256 id_tokens without RS256/JWKS, and whether it offers a custom discovery URL
   instead of pure issuer auto-discovery) - everything tested so far used Koha's own
   OIDC/OAuth2 client on the relying-party side. The webserver rewrite examples in section
   10 (nginx/Apache) are still untested templates.
-- The `fsk`/`status` claims' reimplemented logic (`_patron_status` in `ClaimsCatalog.pm`)
-  side-by-side against the LMSCloud fork's actual `C4::External::DivibibPatronStatus`
-  output on real patron/fines/overdues data - not part of this session's testing.
 - `attribute`-type claims (section 3) against a patron with a **repeatable** extended
   attribute type carrying multiple values.
 - The template-override feature (section 9): verified so far only by parsing/rendering
@@ -662,28 +725,28 @@ login/consent pages on real Koha instances; and client-secret verification/rotat
 ```
 Koha/Plugin/Com/LMSCloud/
 ├── OAuthProvider.pm                 # Main plugin: metadata, install/upgrade/uninstall,
-│                                     # client CRUD, claim-config sanitization, consent
-│                                     # persistence, TTL resolution, code/token management,
-│                                     # configure()/tool(), cronjob_nightly(), api_routes
+│                                    # client CRUD, claim-config sanitization, consent
+│                                    # persistence, TTL resolution, code/token management,
+│                                    # configure()/tool(), cronjob_nightly(), api_routes
 └── OAuthProvider/
-    ├── Controller.pm                 # Mojolicious controller: authorize/token/userinfo/
-    │                                  # discovery/jwks, login->otp->consent flow
-    ├── ClaimsCatalog.pm              # Built-in patron-field catalog + build_claims()
-    │                                  # (field/attribute/static claim types)
-    ├── api_routes.json               # OpenAPIv2 fragment: /authorize,/token,/userinfo,
-    │                                  # /.well-known/openid-configuration,/jwks
-    │                                  # ("x-plugin-owns-auth" on /userinfo - section 12)
-    ├── configure.tt                  # Staff admin UI: client management, claims table +
-    │                                  # "add claim" modal, consent mode, TTL overrides,
-    │                                  # "Customize pages" template-override modals (section 9)
-    ├── tool.tt                       # Staff tool: manual cleanup, active tokens
+    ├── Controller.pm                # Mojolicious controller: authorize/token/userinfo/
+    │                                # discovery/jwks, login->otp->consent flow
+    ├── ClaimsCatalog.pm             # Built-in patron-field catalog + build_claims()
+    │                                # (field/attribute/static claim types)
+    ├── api_routes.json              # OpenAPIv2 fragment: /authorize,/token,/userinfo,
+    │                                # /.well-known/openid-configuration,/jwks
+    │                                # ("x-plugin-owns-auth" on /userinfo - section 12)
+    ├── configure.tt                 # Staff admin UI: client management, claims table +
+    │                                # "add claim" modal, consent mode, TTL overrides,
+    │                                # "Customize pages" template-override modals (section 9)
+    ├── tool.tt                      # Staff tool: manual cleanup, active tokens
     ├── i18n/
-    │   ├── default.inc                # English strings (base/fallback)
-    │   └── de-DE.inc                   # German strings
+    │   ├── default.inc              # English strings (base/fallback)
+    │   └── de-DE.inc                # German strings
     └── templates/
-        ├── login.tt                  # Standalone login page (public, no Koha chrome) -
-        │                              # bundled default; overridable, see section 9
-        ├── otp.tt                    # Standalone 2FA one-time-code page (public) - ditto
-        ├── consent.tt                 # Standalone consent page (public) - ditto
-        └── error.tt                   # Standalone error page (public) - ditto
+        ├── login.tt                 # Standalone login page (public, no Koha chrome) -
+        │                            # bundled default; overridable, see section 9
+        ├── otp.tt                   # Standalone 2FA one-time-code page (public) - ditto
+        ├── consent.tt               # Standalone consent page (public) - ditto
+        └── error.tt                 # Standalone error page (public) - ditto
 ```

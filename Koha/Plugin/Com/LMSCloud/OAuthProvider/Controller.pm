@@ -125,14 +125,34 @@ sub _handle_login {
         return _render_login( $c, $plugin, { %$authz_ctx, error => 'missing_credentials' } );
     }
 
-    # checkpw_internal accepts either a userid or a cardnumber and returns
-    # (1, $cardnumber, $userid, $patron) on success, or 0 on failure. Login
-    # attempt tracking / account lockout is handled by Koha itself inside
-    # checkpw_internal, so no separate rate limiting is needed here.
-    my ( $ok, undef, undef, $patron ) = checkpw_internal( $userid, $password, 1 );
-    unless ( $ok && $patron ) {
+    # checkpw_internal() (unlike C4::Auth::checkpw(), which the rest of Koha
+    # logs in through) only verifies the password - it knows nothing about
+    # account_locked or login_attempts, both of which live one level up, in
+    # checkpw(). That has to be replicated explicitly here, or a patron who's
+    # already locked out by Koha's own FailedLoginAttempts threshold could
+    # still authenticate through this plugin with a correct password, and a
+    # wrong password here would never move them any closer to that lockout.
+    #
+    # account_locked is checked *before* the password is verified at all -
+    # matching checkpw()'s own precedence - so a locked account never
+    # succeeds here even if the password is right; it has to be unlocked
+    # (login_attempts reset) through the normal Koha UI first.
+    my $patron = Koha::Patrons->find( { userid => $userid } )
+        || Koha::Patrons->find( { cardnumber => $userid } );
+
+    if ( $patron && $patron->account_locked ) {
         return _render_login( $c, $plugin, { %$authz_ctx, error => 'invalid_credentials' } );
     }
+
+    # checkpw_internal accepts either a userid or a cardnumber and returns
+    # (1, $cardnumber, $userid, $patron) on success, or 0 on failure.
+    my ( $ok, undef, undef, $checked_patron ) = checkpw_internal( $userid, $password, 1 );
+    unless ( $ok && $checked_patron ) {
+        $patron->update( { login_attempts => ( $patron->login_attempts || 0 ) + 1 } ) if $patron;
+        return _render_login( $c, $plugin, { %$authz_ctx, error => 'invalid_credentials' } );
+    }
+    $patron = $checked_patron;
+    $patron->update( { login_attempts => 0 } ) if $patron->login_attempts;
 
     # Per-client patron-category allow-list/deny-list, checked only now that
     # we actually know who logged in - redirect_uri is already trusted at
@@ -140,6 +160,14 @@ sub _handle_login {
     # a denied consent is (error=access_denied), not as a standalone error
     # page. This patron simply never gets a code/token for this client.
     unless ( $plugin->is_client_allowed_for_patron( $client, $patron ) ) {
+        return _redirect_with_error( $c, $redirect_uri, 'access_denied', $authz_ctx->{state} );
+    }
+
+    # Per-client "prevent logins" checks (restrictions, expiry, fee limits,
+    # lost card, address-correction-needed - see login_blocked_reason). Same
+    # treatment as the category gate above: reported back to the client as
+    # access_denied, never revealed on our own login page.
+    if ( $plugin->login_blocked_reason( $client, $patron ) ) {
         return _redirect_with_error( $c, $redirect_uri, 'access_denied', $authz_ctx->{state} );
     }
 
@@ -611,8 +639,12 @@ sub _claim_names_for_client {
 # Per-claim display rows for the consent screen: {claim_name, label_key} for
 # a translated label (field-sourced claims, incl. the always-present
 # 'userid'), or {claim_name, label_literal} for a plain-text label (extended
-# attributes use their own Koha-configured description; fixed-value claims
-# have no natural human label beyond their own claim name).
+# attributes use their own Koha-configured description). 'static' claims are
+# deliberately omitted entirely: a fixed, admin-configured value isn't the
+# patron's own data being disclosed, so listing it as something "shared"
+# would be misleading noise - it's still released in /userinfo and still
+# counted for consent_covers()/remember_consent() (see
+# _claim_names_for_client), just never shown on this screen.
 sub _consent_rows_for_client {
     my ($client) = @_;
 
@@ -628,9 +660,7 @@ sub _consent_rows_for_client {
                     label_literal => $attribute_type ? $attribute_type->description : $entry->{source},
                 };
         }
-        else {    # 'static'
-            push @rows, { claim_name => $entry->{claim_name}, label_literal => $entry->{claim_name} };
-        }
+        # 'static' - intentionally not added to @rows, see comment above.
     }
     return \@rows;
 }

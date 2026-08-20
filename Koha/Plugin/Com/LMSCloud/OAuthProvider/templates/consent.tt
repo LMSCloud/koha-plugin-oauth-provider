@@ -29,7 +29,12 @@
     <p>[% T.consent_intro %]</p>
     <ul>
         [% FOREACH row IN consent_rows %]
-            <li>[% IF row.label_key %][% T.$row.label_key %][% ELSE %][% row.label_literal | html %][% END %]</li>
+            [% IF row.label_key %]
+                [% SET row_label_key = row.label_key %]
+                <li>[% T.$row_label_key %]</li>
+            [% ELSE %]
+                <li>[% row.label_literal | html %]</li>
+            [% END %]
         [% END %]
     </ul>
 

@@ -1,5 +1,6 @@
 [% USE raw %]
 [% USE Koha %]
+[% USE Asset %]
 [% TRY %]
     [% PROCESS "$PLUGIN_DIR/i18n/${LANG}.inc" %]
 [% CATCH %]
@@ -7,6 +8,14 @@
 [% END %]
 [% INCLUDE 'doc-head-open.inc' %]
 <title>[% T.cfg_title | $raw %]</title>
+[% Asset.css("lib/codemirror/codemirror.css") | $raw %]
+<style>
+    .CodeMirror {
+        resize: vertical;
+        z-index: 0;
+        margin: 1em 0;
+    }
+</style>
 [% INCLUDE 'doc-head-close.inc' %]
 
 [%# Renders the claims configuration table + "add claim" modal. Existing
@@ -63,10 +72,16 @@
     <div class="claims-duplicate-error dialog alert" style="display:none;margin-top:.5em">[% T.cfg_claim_duplicate_error | $raw %]</div>
   </div>
 
+  [%# Options are sorted by their translated label (not by catalog key), so
+      the field picker reads alphabetically regardless of interface language. %]
+  [% field_catalog_sorted = [] %]
+  [% FOREACH claim IN claims_catalog %]
+    [% SET label_key = 'claim_label_' _ claim.key %]
+    [% field_catalog_sorted.push( { key => claim.key, label => T.$label_key } ) %]
+  [% END %]
   <select id="oauthprovider-field-catalog-template" style="display:none">
-    [% FOREACH claim IN claims_catalog %]
-      [% SET label_key = 'claim_label_' _ claim.key %]
-      <option value="[% claim.key | html %]">[% T.$label_key | $raw %]</option>
+    [% FOREACH claim IN field_catalog_sorted.sort('label') %]
+      <option value="[% claim.key | html %]">[% claim.label | $raw %]</option>
     [% END %]
   </select>
   <select id="oauthprovider-attribute-catalog-template" style="display:none">
@@ -79,7 +94,7 @@
     <div class="modal-dialog" role="document">
       <div class="modal-content">
         <div class="modal-header">
-          <button type="button" class="close" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">&times;</span></button>
+          <button type="button" class="closebtn" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">&times;</span></button>
           <h4 class="modal-title">[% T.cfg_claim_modal_title | $raw %]</h4>
         </div>
         <div class="modal-body">
@@ -122,9 +137,28 @@
     </div>
   </div>
 [% END %]
+
+[%# Checkbox group for the per-client "prevent logins" checks - shared by
+    the create and edit forms. enabled_checks is the set currently ticked
+    (the full catalog for "create", so every box starts checked; the
+    client's own login_block_checks for "edit"). The hint is rendered by the
+    caller (li level), not here - see the allowed_categories/denied_categories
+    li's for the same label+hint+indented-content convention this follows. %]
+[% BLOCK login_block_checks_widget %]
+  [% FOREACH check IN login_block_checks_catalog %]
+    [% SET check_label_key = 'cfg_login_block_' _ check %]
+    <div class="oauthprovider-login-block-option">
+      <label for="login_block_[% check | html %]">
+        <input type="checkbox" id="login_block_[% check | html %]" name="login_block_checks" value="[% check | html %]"
+          [% IF enabled_checks.grep('^' _ check _ '$').size %]checked[% END %]>
+        [% T.$check_label_key | $raw %]
+      </label>
+    </div>
+  [% END %]
+[% END %]
 <style>
     #plugins_oauthprovider_configure fieldset.rows label {
-        width: 20rem;
+        width: 25rem;
     }
     #plugins_oauthprovider_configure fieldset.rows label.radio,
     #plugins_oauthprovider_configure fieldset.rows label.yesno,
@@ -133,7 +167,28 @@
         width: auto;
     }
     #plugins_oauthprovider_configure fieldset.rows div.hint {
-        margin-left: 21rem;
+        margin-left: 26rem;
+    }
+    #oauthprovider-claim-modal fieldset.rows label {
+        width: 10rem;
+    }
+    #oauthprovider-claim-modal fieldset.rows div.hint {
+        margin-left: 11rem;
+    }
+    /* Koha core's "fieldset.rows label { float: left; text-align: right; }"
+       (staff-global.scss) matches every label in this fieldset, including
+       these nested per-checkbox ones - reset so each row stacks as a plain
+       left-aligned line instead of floating next to its own text. */
+    #plugins_oauthprovider_configure .oauthprovider-login-block-option label {
+        float: none;
+        width: auto;
+        display: inline;
+        font-weight: normal;
+        text-align: left;
+        margin-right: 0;
+    }
+    #oauthprovider-modal-attribute-source {
+        max-width: 400px;
     }
 </style>
 </head>
@@ -232,7 +287,7 @@
           <div class="modal-dialog modal-lg" role="document">
             <div class="modal-content">
               <div class="modal-header">
-                <button type="button" class="close" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">&times;</span></button>
+                <button type="button" class="closebtn" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">&times;</span></button>
                 <h4 class="modal-title">[% T.$label_key | $raw %]</h4>
               </div>
               <form method="post">
@@ -405,14 +460,14 @@
               </li>
               <li>
                 <label>[% T.cfg_claims_label | $raw %]</label>
-                <div style="margin-left:21rem;max-width:60rem">
+                <div style="margin-left:26rem;max-width:60rem">
                   [% PROCESS claims_config_widget claims = edit_client.allowed_claims %]
                 </div>
               </li>
               <li>
                 <label for="allowed_categories">[% T.cfg_allowed_categories_label | $raw %]</label>
                 <div class="hint">[% T.cfg_allowed_categories_hint | $raw %]</div>
-                <div style="margin-left:21rem;max-width:40rem">
+                <div style="margin-left:26rem;max-width:40rem">
                   <select id="allowed_categories" name="allowed_categories" multiple="multiple" class="select2" style="width:100%">
                     [% FOREACH cat IN patron_categories %]
                       <option value="[% cat.categorycode | html %]"
@@ -426,7 +481,7 @@
               <li>
                 <label for="denied_categories">[% T.cfg_denied_categories_label | $raw %]</label>
                 <div class="hint">[% T.cfg_denied_categories_hint | $raw %]</div>
-                <div style="margin-left:21rem;max-width:40rem">
+                <div style="margin-left:26rem;max-width:40rem">
                   <select id="denied_categories" name="denied_categories" multiple="multiple" class="select2" style="width:100%">
                     [% FOREACH cat IN patron_categories %]
                       <option value="[% cat.categorycode | html %]"
@@ -435,6 +490,13 @@
                       </option>
                     [% END %]
                   </select>
+                </div>
+              </li>
+              <li>
+                <label>[% T.cfg_login_block_label | $raw %]</label>
+                <div class="hint">[% T.cfg_login_block_hint | $raw %]</div>
+                <div style="margin-left:26rem">
+                  [% PROCESS login_block_checks_widget enabled_checks = edit_client.login_block_checks %]
                 </div>
               </li>
             </ol>
@@ -486,14 +548,14 @@
               </li>
               <li>
                 <label>[% T.cfg_claims_label | $raw %]</label>
-                <div style="margin-left:21rem;max-width:60rem">
+                <div style="margin-left:26rem;max-width:60rem">
                   [% PROCESS claims_config_widget claims = [] %]
                 </div>
               </li>
               <li>
                 <label for="allowed_categories">[% T.cfg_allowed_categories_label | $raw %]</label>
                 <div class="hint">[% T.cfg_allowed_categories_hint | $raw %]</div>
-                <div style="margin-left:21rem;max-width:40rem">
+                <div style="margin-left:26rem;max-width:40rem">
                   <select id="allowed_categories" name="allowed_categories" multiple="multiple" class="select2" style="width:100%">
                     [% FOREACH cat IN patron_categories %]
                       <option value="[% cat.categorycode | html %]">
@@ -506,7 +568,7 @@
               <li>
                 <label for="denied_categories">[% T.cfg_denied_categories_label | $raw %]</label>
                 <div class="hint">[% T.cfg_denied_categories_hint | $raw %]</div>
-                <div style="margin-left:21rem;max-width:40rem">
+                <div style="margin-left:26rem;max-width:40rem">
                   <select id="denied_categories" name="denied_categories" multiple="multiple" class="select2" style="width:100%">
                     [% FOREACH cat IN patron_categories %]
                       <option value="[% cat.categorycode | html %]">
@@ -514,6 +576,13 @@
                       </option>
                     [% END %]
                   </select>
+                </div>
+              </li>
+              <li>
+                <label>[% T.cfg_login_block_label | $raw %]</label>
+                <div class="hint">[% T.cfg_login_block_hint | $raw %]</div>
+                <div style="margin-left:26rem">
+                  [% PROCESS login_block_checks_widget enabled_checks = login_block_checks_catalog %]
                 </div>
               </li>
             </ol>
@@ -681,6 +750,32 @@
 
         updateModalRowVisibility();
         refreshDuplicateState();
+    });
+</script>
+
+[% Asset.js( "lib/codemirror/codemirror.min.js" ) | $raw %]
+[% Asset.js( "lib/codemirror/xml.min.js" ) | $raw %]
+<script>
+    $(document).ready(function () {
+        // Lazy-init one CodeMirror instance per template-edit modal, the
+        // first time it's shown - a textarea inside a display:none modal
+        // measures as zero-width, so it can't be initialized up front.
+        var editors = {};
+
+        $('[id^="oauthprovider-template-modal-"]').on('shown.bs.modal', function () {
+            var modalId = this.id;
+            if ( editors[modalId] ) { return; }
+
+            var textarea = $(this).find('textarea[name="template_html"]')[0];
+            if ( !textarea ) { return; }
+
+            editors[modalId] = CodeMirror.fromTextArea( textarea, {
+                lineNumbers: true,
+                lineWrapping: true,
+                mode: "text/html",
+                viewportMargin: Infinity,
+            });
+        });
     });
 </script>
 

@@ -16,6 +16,7 @@ use C4::Context;
 our @CATALOG = (
     { key => 'cardnumber' },
     { key => 'borrowernumber' },
+    { key => 'title' },
     { key => 'firstname' },
     { key => 'surname' },
     { key => 'email' },
@@ -24,9 +25,23 @@ our @CATALOG = (
     { key => 'categorycode' },
     { key => 'category_description' },
     { key => 'dateexpiry' },
+    { key => 'debarred' },
+    { key => 'debarredcomment' },
     { key => 'dateofbirth' },
     { key => 'age' },
     { key => 'address' },
+    { key => 'streetnumber' },
+    { key => 'streettype' },
+    { key => 'street_name' },
+    { key => 'address2' },
+    { key => 'city' },
+    { key => 'state' },
+    { key => 'zipcode' },
+    { key => 'country' },
+    { key => 'contactname' },
+    { key => 'contactfirstname' },
+    { key => 'contacttitle' },
+    { key => 'relationship' },
     { key => 'phone_number' },
     { key => 'mobile' },
     { key => 'sex' },
@@ -34,11 +49,14 @@ our @CATALOG = (
     { key => 'lang' },
     { key => 'fsk' },
     { key => 'status' },
+    { key => 'sort1' },
+    { key => 'sort2' },
 );
 
 my %ACCESSOR_OF = (
     cardnumber           => sub { $_[0]->cardnumber },
     borrowernumber       => sub { $_[0]->borrowernumber },
+    title                => sub { $_[0]->title },
     firstname            => sub { $_[0]->firstname },
     surname              => sub { $_[0]->surname },
     email                => sub { $_[0]->email },
@@ -47,6 +65,11 @@ my %ACCESSOR_OF = (
     categorycode         => sub { $_[0]->categorycode },
     category_description => sub { $_[0]->category ? $_[0]->category->description : undef },
     dateexpiry           => sub { $_[0]->dateexpiry },
+    # Date the patron is restricted until (checkouts/holds blocked), and the
+    # staff-entered reason for it - both plain borrowers-table columns, same
+    # as dateexpiry above.
+    debarred              => sub { $_[0]->debarred },
+    debarredcomment       => sub { $_[0]->debarredcomment },
     # Koha stores this as a plain 'YYYY-MM-DD' string (no DateTime
     # inflation on this column), i.e. already ISO 8601 as-is.
     dateofbirth           => sub { $_[0]->dateofbirth },
@@ -58,6 +81,26 @@ my %ACCESSOR_OF = (
     # deliberately not the alternate/"B_" address Koha also has, since
     # OIDC's address claim models a single address, not two.
     address               => sub { _format_address( $_[0] ) },
+    # Individual base/home address columns, released raw and unformatted -
+    # for clients that want the constituent parts themselves rather than
+    # the composed OIDC 'address' claim above. 'street_name' maps to the
+    # borrowers table's own "address" column (the street name only, no
+    # house number); it is named differently here to avoid colliding with
+    # the composed claim's 'address' key.
+    streetnumber          => sub { $_[0]->streetnumber },
+    streettype            => sub { $_[0]->streettype },
+    street_name           => sub { $_[0]->address },
+    address2              => sub { $_[0]->address2 },
+    city                  => sub { $_[0]->city },
+    state                 => sub { $_[0]->state },
+    zipcode               => sub { $_[0]->zipcode },
+    country               => sub { $_[0]->country },
+    # Guarantor/contact-person fields (used for children and organisations)
+    # and the free-form "sort" fields libraries repurpose for local needs.
+    contactname           => sub { $_[0]->contactname },
+    contactfirstname      => sub { $_[0]->contactfirstname },
+    contacttitle          => sub { $_[0]->contacttitle },
+    relationship          => sub { $_[0]->relationship },
     # Koha's primary phone number field ("phone" on the borrowers table) -
     # not "mobile" or "phonepro".
     phone_number          => sub { $_[0]->phone },
@@ -82,6 +125,9 @@ my %ACCESSOR_OF = (
     # expired checks twice for no reason.
     fsk                   => sub { _patron_status( $_[0] )->{fsk} + 0 },
     status                => sub { _patron_status( $_[0] )->{status} + 0 },
+    # Free-form fields libraries repurpose for their own local needs.
+    sort1                 => sub { $_[0]->sort1 },
+    sort2                 => sub { $_[0]->sort2 },
 );
 
 # =========================== patron status (fsk / status) ==================

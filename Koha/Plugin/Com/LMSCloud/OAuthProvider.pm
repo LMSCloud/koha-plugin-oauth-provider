@@ -30,6 +30,7 @@ use Digest::SHA qw(sha256_hex sha256);
 use JSON qw(encode_json decode_json);
 use MIME::Base64 qw(encode_base64url);
 use Mojo::JWT;
+use Scalar::Util qw(looks_like_number);
 use Template;
 use Try::Tiny;
 use URI::Escape qw(uri_escape);
@@ -53,7 +54,7 @@ sub _random_token {
     return Koha::Token->new->generate( { pattern => sprintf( $SAFE_TOKEN_PATTERN, $length ) } );
 }
 
-our $VERSION = '1.5.0';
+our $VERSION = '1.6.0';
 
 our $metadata = {
     name            => 'OAuth2 / OpenID Connect Identity Provider',
@@ -89,6 +90,25 @@ my %DEFAULT_SETTINGS = (
     custom_otp_html           => '',
     custom_consent_html       => '',
     custom_error_html         => '',
+);
+
+# Per-client "prevent logins" checks, in the order shown in the admin UI -
+# see login_blocked_reason() for what each one actually tests. All of them
+# are enabled by default (both for a brand-new client and for any client row
+# that predates this feature - see _decode_client_json), since these are
+# patron-status checks a library would normally want enforced; unchecking
+# one is an explicit opt-out. Declared up here (rather than next to
+# consent_modes/CONSENT_MODES, which it otherwise mirrors) because
+# _decode_client_json, defined earlier in the file, needs it in scope.
+my @LOGIN_BLOCK_CHECKS = (
+    'debarred',
+    'expired',
+    'fees_over_limit',
+    'password_expired',
+    'guarantees_fees_over_limit',
+    'guarantors_fees_over_limit',
+    'lost_card',
+    'gone_no_address',
 );
 
 # Maps each customizable public page to its template file and the settings
@@ -158,6 +178,7 @@ sub install {
             allowed_categories  TEXT NULL,
             denied_categories   TEXT NULL,
             consent_mode        VARCHAR(20) NOT NULL DEFAULT 'always',
+            login_block_checks  TEXT NULL,
             access_token_ttl_seconds  INT(11) NULL,
             refresh_token_ttl_seconds INT(11) NULL,
             is_active           TINYINT(1) NOT NULL DEFAULT 1,
@@ -301,6 +322,13 @@ sub upgrade {
         );
     }
 
+    # 1.6.0: per-client "prevent logins" checks (patron status: restrictions,
+    # expiry, fee limits, lost card, address-correction-needed) - see
+    # login_blocked_reason(). NULL (both pre-migration rows and freshly
+    # inserted ones before their first edit) means "every check enabled",
+    # the fail-safe default - see _decode_client_json.
+    $dbh->do("ALTER TABLE $clients_table ADD COLUMN IF NOT EXISTS login_block_checks TEXT NULL");
+
     return 1;
 }
 
@@ -394,12 +422,19 @@ sub get_client_by_row_id {
 # denied_categories are TEXT NULL (added in 1.2.0) - rows created before
 # that migration, or never edited since, may have NULL there, so this
 # defaults a missing/empty value to [] rather than choking on decode_json(undef).
+#
+# login_block_checks (added in 1.6.0) defaults the other way around: NULL
+# there means "every check enabled", not "none" - these are safety checks a
+# library would normally want on, and a row predating this feature (or a
+# freshly created one before its first edit) should behave as if all of them
+# were ticked, not as if login-blocking were silently switched off.
 sub _decode_client_json {
     my ( $self, $row ) = @_;
     $row->{redirect_uris}      = decode_json( $row->{redirect_uris} );
     $row->{allowed_claims}     = decode_json( $row->{allowed_claims} );
     $row->{allowed_categories} = $row->{allowed_categories} ? decode_json( $row->{allowed_categories} ) : [];
     $row->{denied_categories}  = $row->{denied_categories}  ? decode_json( $row->{denied_categories} )  : [];
+    $row->{login_block_checks} = $row->{login_block_checks} ? decode_json( $row->{login_block_checks} ) : [@LOGIN_BLOCK_CHECKS];
     return $row;
 }
 
@@ -415,8 +450,8 @@ sub create_client {
     my $table = $self->_clients_table;
     $dbh->do(
         "INSERT INTO $table
-            (client_id, client_secret_hash, client_name, redirect_uris, allowed_claims, allowed_categories, denied_categories, consent_mode, access_token_ttl_seconds, refresh_token_ttl_seconds, is_active, created_on, updated_on)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())",
+            (client_id, client_secret_hash, client_name, redirect_uris, allowed_claims, allowed_categories, denied_categories, consent_mode, login_block_checks, access_token_ttl_seconds, refresh_token_ttl_seconds, is_active, created_on, updated_on)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())",
         undef,
         $client_id,
         $secret_hash,
@@ -426,6 +461,7 @@ sub create_client {
         encode_json( $self->_sanitize_categories( $args->{allowed_categories} ) ),
         encode_json( $self->_sanitize_categories( $args->{denied_categories} ) ),
         $self->_sanitize_consent_mode( $args->{consent_mode} ),
+        encode_json( $self->_sanitize_login_block_checks( $args->{login_block_checks} ) ),
         $self->_sanitize_ttl_override( $args->{access_token_ttl_seconds} ),
         $self->_sanitize_ttl_override( $args->{refresh_token_ttl_seconds} ),
         $args->{is_active} ? 1 : 0,
@@ -441,7 +477,7 @@ sub update_client {
     my $table = $self->_clients_table;
     $dbh->do(
         "UPDATE $table
-            SET client_name = ?, redirect_uris = ?, allowed_claims = ?, allowed_categories = ?, denied_categories = ?, consent_mode = ?, access_token_ttl_seconds = ?, refresh_token_ttl_seconds = ?, is_active = ?, updated_on = NOW()
+            SET client_name = ?, redirect_uris = ?, allowed_claims = ?, allowed_categories = ?, denied_categories = ?, consent_mode = ?, login_block_checks = ?, access_token_ttl_seconds = ?, refresh_token_ttl_seconds = ?, is_active = ?, updated_on = NOW()
          WHERE id = ?",
         undef,
         $args->{client_name},
@@ -450,6 +486,7 @@ sub update_client {
         encode_json( $self->_sanitize_categories( $args->{allowed_categories} ) ),
         encode_json( $self->_sanitize_categories( $args->{denied_categories} ) ),
         $self->_sanitize_consent_mode( $args->{consent_mode} ),
+        encode_json( $self->_sanitize_login_block_checks( $args->{login_block_checks} ) ),
         $self->_sanitize_ttl_override( $args->{access_token_ttl_seconds} ),
         $self->_sanitize_ttl_override( $args->{refresh_token_ttl_seconds} ),
         $args->{is_active} ? 1 : 0,
@@ -586,6 +623,19 @@ sub _sanitize_consent_mode {
     return $mode;
 }
 
+sub login_block_checks { return [@LOGIN_BLOCK_CHECKS] }
+
+# Keeps only recognised check keys, so a hand-crafted POST can't smuggle
+# arbitrary strings into login_block_checks (checkbox values in the admin UI
+# already come from this same list, so this is defense-in-depth, not the
+# primary safeguard).
+sub _sanitize_login_block_checks {
+    my ( $self, $checks ) = @_;
+    $checks ||= [];
+    my %valid = map { $_ => 1 } @LOGIN_BLOCK_CHECKS;
+    return [ grep { $valid{$_} } @$checks ];
+}
+
 # Per-client access/refresh token lifetime override, in seconds. undef/blank
 # means "no override" (NULL in the DB, falls back to the plugin's global
 # setting - see effective_ttls). Anything that isn't a positive integer is
@@ -654,6 +704,68 @@ sub is_client_allowed_for_patron {
     return 0 if @$allowed && !grep { lc($_) eq lc($categorycode) } @$allowed;
 
     return 1;
+}
+
+# Per-client "prevent logins" checks (patron status - not to be confused
+# with account_locked, which is Koha's own failed-login-attempts lockout and
+# is enforced unconditionally in Controller::_handle_login, before password
+# verification even happens). $client is the hashref shape get_client()/
+# list_clients() return (login_block_checks already JSON-decoded into an
+# arrayref of enabled check keys - see _decode_client_json for what a NULL
+# column resolves to).
+#
+# Returns the key of the first tripped check, or undef if the patron passes
+# all of the ones this client has enabled. Checked only after password
+# verification succeeds (same point as is_client_allowed_for_patron), so a
+# blocked patron is turned away the same way a denied consent is
+# (error=access_denied on redirect_uri) - never revealed on our own login
+# page, since by that point the client is already trusted and reporting the
+# *reason* there would leak account-status details to whoever is at the
+# browser.
+sub login_blocked_reason {
+    my ( $self, $client, $patron ) = @_;
+    return undef unless $client && $patron;
+
+    my $enabled = { map { $_ => 1 } @{ $client->{login_block_checks} // [@LOGIN_BLOCK_CHECKS] } };
+
+    return 'debarred' if $enabled->{debarred} && $patron->is_debarred;
+    return 'expired'  if $enabled->{expired}  && $patron->is_expired;
+
+    if ( $enabled->{fees_over_limit} ) {
+        my $limit = C4::Context->preference('noissuescharge');
+        return 'fees_over_limit'
+            if looks_like_number($limit) && $patron->account->non_issues_charges > $limit;
+    }
+
+    return 'password_expired' if $enabled->{password_expired} && $patron->password_expired;
+
+    # Fees of the patrons *this* patron vouches for (is guarantor of).
+    if ( $enabled->{guarantees_fees_over_limit} ) {
+        my $limit = C4::Context->preference('NoIssuesChargeGuarantees');
+        if ( looks_like_number($limit) ) {
+            my $sum = 0;
+            $sum += $_->account->non_issues_charges
+                for map { $_->guarantee } $patron->guarantee_relationships->as_list;
+            return 'guarantees_fees_over_limit' if $sum > $limit;
+        }
+    }
+
+    # Combined fees of this patron's own guarantor(s), including whatever
+    # those guarantors' *other* guarantees owe - mirrors
+    # C4::Circulation::CanBookBeIssued's DEBT_GUARANTORS check.
+    if ( $enabled->{guarantors_fees_over_limit} ) {
+        my $limit = C4::Context->preference('NoIssuesChargeGuarantorsWithGuarantees');
+        if ( looks_like_number($limit) ) {
+            my $sum = $patron->relationships_debt(
+                { include_guarantors => 1, only_this_guarantor => 0, include_this_patron => 1 } );
+            return 'guarantors_fees_over_limit' if $sum > $limit;
+        }
+    }
+
+    return 'lost_card'       if $enabled->{lost_card}       && $patron->lost && $patron->lost == 1;
+    return 'gone_no_address' if $enabled->{gone_no_address} && $patron->gonenoaddress && $patron->gonenoaddress == 1;
+
+    return undef;
 }
 
 sub _generate_unused_client_id {
@@ -1147,6 +1259,7 @@ sub configure {
                 allowed_categories => [ _multi_param( $cgi, 'allowed_categories' ) ],
                 denied_categories  => [ _multi_param( $cgi, 'denied_categories' ) ],
                 consent_mode       => scalar $cgi->param('consent_mode'),
+                login_block_checks => [ _multi_param( $cgi, 'login_block_checks' ) ],
                 access_token_ttl_seconds  => scalar $cgi->param('access_token_ttl_seconds'),
                 refresh_token_ttl_seconds => scalar $cgi->param('refresh_token_ttl_seconds'),
                 is_active          => 1,
@@ -1163,6 +1276,7 @@ sub configure {
                 allowed_categories => [ _multi_param( $cgi, 'allowed_categories' ) ],
                 denied_categories  => [ _multi_param( $cgi, 'denied_categories' ) ],
                 consent_mode       => scalar $cgi->param('consent_mode'),
+                login_block_checks => [ _multi_param( $cgi, 'login_block_checks' ) ],
                 access_token_ttl_seconds  => scalar $cgi->param('access_token_ttl_seconds'),
                 refresh_token_ttl_seconds => scalar $cgi->param('refresh_token_ttl_seconds'),
                 is_active          => $cgi->param('is_active') ? 1 : 0,
@@ -1222,6 +1336,7 @@ sub _render_configure {
         claims_catalog   => Koha::Plugin::Com::LMSCloud::OAuthProvider::ClaimsCatalog->catalog,
         attribute_types  => $self->patron_attribute_types,
         consent_modes    => $self->consent_modes,
+        login_block_checks_catalog => $self->login_block_checks,
         patron_categories => \@categories,
         template_customization => $self->template_customization_status,
         settings         => $self->settings,
