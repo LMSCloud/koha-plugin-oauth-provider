@@ -1362,6 +1362,9 @@ sub _render_configure {
         patron_categories => \@categories,
         template_customization => $self->template_customization_status,
         settings         => $self->settings,
+        # Endpoint URLs and supported values a relying party has to be
+        # configured with - only meaningful once the public base URL is set.
+        oidc_config      => ( $self->settings->{issuer_url} ? $self->discovery_document : undef ),
         base_url         => C4::Context->preference('staffClientBaseURL') || '',
         class_name       => uri_escape( ref($self) ),
         # Raw (unescaped) class name for hidden form fields - forms submit

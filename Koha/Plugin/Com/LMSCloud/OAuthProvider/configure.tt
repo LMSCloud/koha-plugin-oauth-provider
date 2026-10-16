@@ -255,6 +255,27 @@
         </fieldset>
       </form>
 
+      [% IF oidc_config %]
+        <h2>[% T.cfg_oidc_heading | $raw %]</h2>
+        <p class="hint">[% T.cfg_oidc_hint | $raw %]</p>
+        <table class="table oauthprovider-oidc-config">
+          <tbody>
+            <tr><th>[% T.cfg_oidc_issuer | $raw %]</th><td><code>[% oidc_config.issuer | html %]</code></td></tr>
+            <tr><th>[% T.cfg_oidc_discovery | $raw %]</th><td><code>[% oidc_config.issuer | html %]/.well-known/openid-configuration</code></td></tr>
+            <tr><th>[% T.cfg_oidc_authorization_endpoint | $raw %]</th><td><code>[% oidc_config.authorization_endpoint | html %]</code></td></tr>
+            <tr><th>[% T.cfg_oidc_token_endpoint | $raw %]</th><td><code>[% oidc_config.token_endpoint | html %]</code></td></tr>
+            <tr><th>[% T.cfg_oidc_userinfo_endpoint | $raw %]</th><td><code>[% oidc_config.userinfo_endpoint | html %]</code></td></tr>
+            <tr><th>[% T.cfg_oidc_jwks_uri | $raw %]</th><td><code>[% oidc_config.jwks_uri | html %]</code></td></tr>
+            <tr><th>[% T.cfg_oidc_response_types | $raw %]</th><td><code>[% oidc_config.response_types_supported.join(', ') | html %]</code></td></tr>
+            <tr><th>[% T.cfg_oidc_grant_types | $raw %]</th><td><code>[% oidc_config.grant_types_supported.join(', ') | html %]</code></td></tr>
+            <tr><th>[% T.cfg_oidc_scopes | $raw %]</th><td><code>[% oidc_config.scopes_supported.join(' ') | html %]</code></td></tr>
+            <tr><th>[% T.cfg_oidc_auth_methods | $raw %]</th><td><code>[% oidc_config.token_endpoint_auth_methods_supported.join(', ') | html %]</code></td></tr>
+            <tr><th>[% T.cfg_oidc_signing_alg | $raw %]</th><td><code>[% oidc_config.id_token_signing_alg_values_supported.join(', ') | html %]</code> &ndash; [% T.cfg_oidc_signing_alg_hint | $raw %]</td></tr>
+            <tr><th>[% T.cfg_oidc_pkce | $raw %]</th><td><code>[% oidc_config.code_challenge_methods_supported.join(', ') | html %]</code> [% T.cfg_oidc_pkce_hint | $raw %]</td></tr>
+          </tbody>
+        </table>
+      [% END %]
+
       <h2>[% T.cfg_templates_heading | $raw %]</h2>
       <p class="hint">[% T.cfg_templates_hint | $raw %]</p>
       <table class="table">
