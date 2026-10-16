@@ -6,14 +6,27 @@
             "tags": ["oauthprovider"],
             "produces": ["text/html"],
             "parameters": [
-                { "name": "response_type", "in": "query", "required": true, "type": "string" },
-                { "name": "client_id", "in": "query", "required": true, "type": "string" },
-                { "name": "redirect_uri", "in": "query", "required": true, "type": "string" },
+                { "name": "response_type", "in": "query", "required": false, "type": "string" },
+                { "name": "client_id", "in": "query", "required": false, "type": "string" },
+                { "name": "redirect_uri", "in": "query", "required": false, "type": "string" },
                 { "name": "state", "in": "query", "required": false, "type": "string" },
                 { "name": "scope", "in": "query", "required": false, "type": "string" },
                 { "name": "code_challenge", "in": "query", "required": false, "type": "string" },
                 { "name": "code_challenge_method", "in": "query", "required": false, "type": "string" },
-                { "name": "nonce", "in": "query", "required": false, "type": "string" }
+                { "name": "nonce", "in": "query", "required": false, "type": "string" },
+                { "name": "prompt", "in": "query", "required": false, "type": "string" },
+                { "name": "response_mode", "in": "query", "required": false, "type": "string" },
+                { "name": "ui_locales", "in": "query", "required": false, "type": "string" },
+                { "name": "claims_locales", "in": "query", "required": false, "type": "string" },
+                { "name": "login_hint", "in": "query", "required": false, "type": "string" },
+                { "name": "max_age", "in": "query", "required": false, "type": "string" },
+                { "name": "acr_values", "in": "query", "required": false, "type": "string" },
+                { "name": "display", "in": "query", "required": false, "type": "string" },
+                { "name": "id_token_hint", "in": "query", "required": false, "type": "string" },
+                { "name": "claims", "in": "query", "required": false, "type": "string" },
+                { "name": "request", "in": "query", "required": false, "type": "string" },
+                { "name": "request_uri", "in": "query", "required": false, "type": "string" },
+                { "name": "registration", "in": "query", "required": false, "type": "string" }
             ],
             "responses": {
                 "200": { "description": "Login form" },
@@ -50,6 +63,7 @@
     "/token": {
         "post": {
             "x-mojo-to": "Com::LMSCloud::OAuthProvider::Controller#token",
+            "x-plugin-owns-auth": true,
             "operationId": "oauthProviderToken",
             "tags": ["oauthprovider"],
             "produces": ["application/json"],

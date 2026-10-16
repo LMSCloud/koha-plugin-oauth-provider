@@ -54,7 +54,7 @@ sub _random_token {
     return Koha::Token->new->generate( { pattern => sprintf( $SAFE_TOKEN_PATTERN, $length ) } );
 }
 
-our $VERSION = '1.6.0';
+our $VERSION = '1.6.1';
 
 our $metadata = {
     name            => 'OAuth2 / OpenID Connect Identity Provider',
@@ -64,7 +64,7 @@ our $metadata = {
                       . 'per-client-configurable user data via /userinfo (and, with '
                       . 'scope=openid, a signed id_token).',
     date_authored   => '2026-08-04',
-    date_updated    => '2026-08-20',
+    date_updated    => '2026-10-16',
     minimum_version => '22.11',
     maximum_version => undef,
     version         => $VERSION,
@@ -708,8 +708,8 @@ sub is_client_allowed_for_patron {
 
 # Per-client "prevent logins" checks (patron status - not to be confused
 # with account_locked, which is Koha's own failed-login-attempts lockout and
-# is enforced unconditionally in Controller::_handle_login, before password
-# verification even happens). $client is the hashref shape get_client()/
+# is enforced unconditionally by C4::Auth::checkpw in
+# Controller::_handle_login). $client is the hashref shape get_client()/
 # list_clients() return (login_block_checks already JSON-decoded into an
 # arrayref of enabled check keys - see _decode_client_json for what a NULL
 # column resolves to).
@@ -731,22 +731,39 @@ sub login_blocked_reason {
     return 'debarred' if $enabled->{debarred} && $patron->is_debarred;
     return 'expired'  if $enabled->{expired}  && $patron->is_expired;
 
+    # Koha 24.11+ has per-category fee limits (falling back to the system
+    # preferences) - use Koha's own evaluation there, so the result always
+    # matches what circulation enforces. Older versions only know the system
+    # preferences, evaluated the same way CanBookBeIssued does there.
+    my $limits;
+    $limits = $patron->is_patron_inside_charge_limits
+        if $patron->can('is_patron_inside_charge_limits')
+        && grep { $enabled->{$_} } qw(fees_over_limit guarantees_fees_over_limit guarantors_fees_over_limit);
+
     if ( $enabled->{fees_over_limit} ) {
-        my $limit = C4::Context->preference('noissuescharge');
-        return 'fees_over_limit'
-            if looks_like_number($limit) && $patron->account->non_issues_charges > $limit;
+        if ($limits) {
+            return 'fees_over_limit' if $limits->{noissuescharge}->{overlimit};
+        } else {
+            my $limit = C4::Context->preference('noissuescharge');
+            return 'fees_over_limit'
+                if looks_like_number($limit) && $patron->account->non_issues_charges > $limit;
+        }
     }
 
     return 'password_expired' if $enabled->{password_expired} && $patron->password_expired;
 
     # Fees of the patrons *this* patron vouches for (is guarantor of).
     if ( $enabled->{guarantees_fees_over_limit} ) {
-        my $limit = C4::Context->preference('NoIssuesChargeGuarantees');
-        if ( looks_like_number($limit) ) {
-            my $sum = 0;
-            $sum += $_->account->non_issues_charges
-                for map { $_->guarantee } $patron->guarantee_relationships->as_list;
-            return 'guarantees_fees_over_limit' if $sum > $limit;
+        if ($limits) {
+            return 'guarantees_fees_over_limit' if $limits->{NoIssuesChargeGuarantees}->{overlimit};
+        } else {
+            my $limit = C4::Context->preference('NoIssuesChargeGuarantees');
+            if ( looks_like_number($limit) ) {
+                my $sum = 0;
+                $sum += $_->account->non_issues_charges
+                    for map { $_->guarantee } $patron->guarantee_relationships->as_list;
+                return 'guarantees_fees_over_limit' if $sum > $limit;
+            }
         }
     }
 
@@ -754,11 +771,16 @@ sub login_blocked_reason {
     # those guarantors' *other* guarantees owe - mirrors
     # C4::Circulation::CanBookBeIssued's DEBT_GUARANTORS check.
     if ( $enabled->{guarantors_fees_over_limit} ) {
-        my $limit = C4::Context->preference('NoIssuesChargeGuarantorsWithGuarantees');
-        if ( looks_like_number($limit) ) {
-            my $sum = $patron->relationships_debt(
-                { include_guarantors => 1, only_this_guarantor => 0, include_this_patron => 1 } );
-            return 'guarantors_fees_over_limit' if $sum > $limit;
+        if ($limits) {
+            return 'guarantors_fees_over_limit'
+                if $limits->{NoIssuesChargeGuarantorsWithGuarantees}->{overlimit};
+        } else {
+            my $limit = C4::Context->preference('NoIssuesChargeGuarantorsWithGuarantees');
+            if ( looks_like_number($limit) ) {
+                my $sum = $patron->relationships_debt(
+                    { include_guarantors => 1, only_this_guarantor => 0, include_this_patron => 1 } );
+                return 'guarantors_fees_over_limit' if $sum > $limit;
+            }
         }
     }
 

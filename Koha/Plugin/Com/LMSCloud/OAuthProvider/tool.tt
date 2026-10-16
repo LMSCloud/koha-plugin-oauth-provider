@@ -34,6 +34,7 @@
       <h1>[% T.tool_heading | $raw %]</h1>
 
       <form method="post">
+        [% TRY %][% PROCESS 'csrf-token.inc' %][% CATCH %][% END %]
         <input type="hidden" name="class" value="[% plugin_class | html %]">
         <input type="hidden" name="method" value="tool">
         <input type="hidden" name="cleanup" value="1">

@@ -44,7 +44,7 @@ sequenceDiagram
     User->>Koha: GET /authorize
     Koha->>User: Login form
     User->>Koha: POST /authorize (stage=login: userid, password)
-    Koha->>Koha: checkpw_internal()
+    Koha->>Koha: checkpw()
     opt patron has 2FA enabled on this Koha
         Koha->>User: One-time code form
         User->>Koha: POST /authorize (stage=otp: otp_token, signed ticket)
@@ -70,8 +70,9 @@ See the comments in `Controller.pm` for details. Short version:
    login form (no Koha chrome - see section 8). `scope` and `nonce` (if supplied by the
    client) are carried through all the way to the finished authorization code.
 2. **`POST /authorize`** (stage `login`) checks the credentials via
-   `C4::Auth::checkpw_internal` (allows login by either `userid` or `cardnumber`; Koha's
-   own account lockout and failed-attempt tracking kicks in automatically).
+   `C4::Auth::checkpw`, the same function Koha's own login uses (allows login by either
+   `userid` or `cardnumber`, supports LDAP; Koha's own account lockout, failed-attempt
+   tracking and `AuthSuccessLog`/`AuthFailureLog` apply automatically).
 3. **`POST /authorize`** (stage `otp`, only if the patron has 2FA enabled - section 6)
    verifies a one-time code via `Koha::Auth::TwoFactorAuth`, gated by the same kind of
    signed ticket as the consent step.
@@ -249,7 +250,7 @@ application under *Plugins &rarr; OAuth2 / OpenID Connect Identity Provider &rar
   broad allow-list).
 
 Unlike the claims in section 3, this is a **hard gate on the login itself**, checked in
-`Controller::_handle_login` right after `checkpw_internal` succeeds (i.e. once the
+`Controller::_handle_login` right after `checkpw` succeeds (i.e. once the
 patron's identity - and therefore their category - is actually known) and before a
 consent screen or authorization code is ever produced. A rejected patron is redirected
 straight back to the client's `redirect_uri` with `error=access_denied&state=...` - the
@@ -267,7 +268,7 @@ POST can't smuggle in a nonexistent code).
 ### Login-blocking checks (patron status)
 
 A second, independent per-client gate, checked at the same point (right after
-`checkpw_internal` succeeds, before 2FA/consent/code issuance) and with the same
+`checkpw` succeeds, before 2FA/consent/code issuance) and with the same
 rejection behavior (redirect to `redirect_uri` with `error=access_denied`, never a
 Koha-branded error page - see the reasoning in section 15). Unlike the category
 allow/deny-list, this is a fixed set of **patron-status** checks, each individually
@@ -278,10 +279,10 @@ since these are conditions a library would normally want enforced:
 |---|---|
 | Account restricted | `Koha::Patron::is_debarred` - at least one active restriction |
 | Account expired | `Koha::Patron::is_expired` (`dateexpiry`) |
-| Fees over limit | the patron's own `Koha::Account::non_issues_charges` exceeds the `noissuescharge` system preference |
+| Fees over limit | the patron's own `Koha::Account::non_issues_charges` exceeds the `noissuescharge` limit |
 | Password expired | `Koha::Patron::password_expired` |
-| Guarantees' fees over limit | patrons this patron is a guarantor *for* (`guarantee_relationships`) - their combined `non_issues_charges` exceeds the `NoIssuesChargeGuarantees` system preference |
-| Guarantors' fees over limit | this patron's own guarantor(s), including whatever those guarantors' *other* guarantees owe (`Koha::Patron::relationships_debt`) - exceeds the `NoIssuesChargeGuarantorsWithGuarantees` system preference |
+| Guarantees' fees over limit | patrons this patron is a guarantor *for* (`guarantee_relationships`) - their combined `non_issues_charges` exceeds the `NoIssuesChargeGuarantees` limit |
+| Guarantors' fees over limit | this patron's own guarantor(s), including whatever those guarantors' *other* guarantees owe (`Koha::Patron::relationships_debt`) - exceeds the `NoIssuesChargeGuarantorsWithGuarantees` limit |
 | Card reported lost | `Koha::Patron::lost` |
 | Address needs correction | `Koha::Patron::gonenoaddress` |
 
@@ -289,7 +290,12 @@ The fee-limit and guarantor-debt checks deliberately reuse the exact same logic
 `C4::Circulation::CanBookBeIssued` applies when deciding whether a patron can check out
 an item (`DEBT`/`DEBT_GUARANTEES`/`DEBT_GUARANTORS`), rather than reimplementing the
 math - `relationships_debt` in particular is a public `Koha::Patron` method, not
-something this plugin computes itself.
+something this plugin computes itself. On Koha 24.11 and later, where these limits can
+also be set per patron category (falling back to the system preferences), the plugin uses
+`Koha::Patron::is_patron_inside_charge_limits` - Koha's own evaluation - so the result
+always matches what circulation enforces (including a limit of `0` meaning "no check").
+On older versions, which only know the system preferences, the checks are evaluated the
+way `CanBookBeIssued` does there.
 
 `OAuthProvider::login_blocked_reason($client, $patron)` implements the check against the
 client's `login_block_checks` (a JSON array of enabled check keys; a `NULL` column - both
@@ -328,7 +334,8 @@ grants for "remember" mode.
 ## 6. Two-factor authentication
 
 If a patron has 2FA enabled on **this** Koha (i.e. `TwoFactorAuthentication` is not
-`disabled` and the patron has completed enrollment - has a `secret` on file), logging in
+`disabled` and the patron has completed enrollment - `auth_method` is `two-factor`, the
+same indicator `C4::Auth` uses), logging in
 through this plugin also requires a one-time code, exactly as Koha's own staff login
 would. This is deliberately re-implemented here rather than reused: this plugin never
 goes through `C4::Auth::checkauth()`'s session-based login flow at all (see section 8),
@@ -558,7 +565,7 @@ if ($authorization_header and $authorization_header =~ /^Bearer /) {
 **Fix applied on our own IdP-hosting instances:** a small, opt-in core patch adds an
 early exemption, checked *before* any Bearer-header handling, for routes that declare
 `"x-plugin-owns-auth": true` in their `api_routes.json` operation (this plugin's
-`/userinfo` GET operation does):
+`/userinfo` GET and `/token` POST operations do):
 
 ```perl
 # in Koha::REST::V1::Auth::authenticate_api_request, right after $spec is resolved
@@ -574,6 +581,12 @@ Koha's own Bearer-token/API-key auth for its own routes). It needs to be applied
 the Koha instance(s) **hosting this plugin** (acting as the IdP) - not to relying-party
 Koha instances that merely call out to `/userinfo` as a client.
 
+The same exemption is needed on `/token` for clients authenticating with
+`client_secret_basic` (RFC 6749 section 2.3.1, the default of most OIDC client
+libraries): Koha treats any `Authorization: Basic ...` header as a patron login
+(`RESTBasicAuth`) and rejects the request before the plugin's controller runs. Without
+the patch, only `client_secret_post` (client_id/client_secret in the form body) works.
+
 **Without this patch, `/userinfo` cannot be used at all**, by any client - the `id_token`
 stays deliberately minimal regardless (section 11), so it is not an alternative source
 for the per-client-configured claims (section 3) for OIDC clients either. A **pure OAuth2
@@ -585,6 +598,11 @@ is therefore effectively **required** for this plugin to be useful beyond bare
 authentication.
 
 ## 13. Installation
+
+Supported Koha versions: 22.11 up to 25.11 (Bootstrap 3/4 and Bootstrap 5 staff
+interfaces, with and without the CSRF protection Koha enforces since 24.05). The core
+patch described in section 12 is required on the IdP-hosting instance for `/userinfo`
+and for `client_secret_basic` at `/token`.
 
 1. Package this repository as a `.kpz`:
    ```bash
@@ -664,15 +682,14 @@ curl https://opac.example.org/api/v1/contrib/oauthprovider/.well-known/openid-co
 - A patron with 2FA enabled on the IdP's Koha (section 6) cannot fully authenticate
   through this plugin with just their password - the same one-time-code challenge Koha's
   own staff login would require is enforced here too.
-- `Controller::_handle_login` calls `C4::Auth::checkpw_internal` directly, not
-  `C4::Auth::checkpw` - and `checkpw_internal` only verifies the password, nothing else.
-  `account_locked` and `login_attempts` (Koha's own failed-login-attempts lockout) live in
-  `checkpw`, one level up, so they are replicated explicitly here: `account_locked` is
-  checked *before* the password is verified at all (matching `checkpw`'s own precedence,
-  so a locked account never succeeds even with the correct password), a wrong password
-  increments `login_attempts`, and a successful login resets it to 0. This is
-  unconditional, not a per-client setting - see the per-client checks in section 4 for
-  everything that *is* configurable.
+- `Controller::_handle_login` authenticates via `C4::Auth::checkpw`, the same function
+  Koha's own login uses: LDAP (with internal fallback), `account_locked` and
+  `login_attempts` (Koha's own failed-login-attempts lockout, so a locked account never
+  succeeds even with the correct password), the `AnonymousPatron` block and the
+  `AuthSuccessLog`/`AuthFailureLog` action logs all apply. An expired password is not
+  rejected there but left to the per-client "password expired" check (section 4). The
+  lockout is unconditional, not a per-client setting - see the per-client checks in
+  section 4 for everything that *is* configurable.
 
 ## 16. What has been tested, and known remaining gaps
 

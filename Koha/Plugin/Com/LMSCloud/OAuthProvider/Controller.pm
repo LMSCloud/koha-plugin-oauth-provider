@@ -5,7 +5,7 @@ use Modern::Perl;
 use Mojo::Base 'Mojolicious::Controller';
 use Mojo::URL;
 
-use C4::Auth qw(checkpw_internal);
+use C4::Auth qw(checkpw);
 use C4::Context;
 use Digest::SHA qw(sha256);
 use MIME::Base64 qw(decode_base64 encode_base64url);
@@ -125,34 +125,27 @@ sub _handle_login {
         return _render_login( $c, $plugin, { %$authz_ctx, error => 'missing_credentials' } );
     }
 
-    # checkpw_internal() (unlike C4::Auth::checkpw(), which the rest of Koha
-    # logs in through) only verifies the password - it knows nothing about
-    # account_locked or login_attempts, both of which live one level up, in
-    # checkpw(). That has to be replicated explicitly here, or a patron who's
-    # already locked out by Koha's own FailedLoginAttempts threshold could
-    # still authenticate through this plugin with a correct password, and a
-    # wrong password here would never move them any closer to that lockout.
-    #
-    # account_locked is checked *before* the password is verified at all -
-    # matching checkpw()'s own precedence - so a locked account never
-    # succeeds here even if the password is right; it has to be unlocked
-    # (login_attempts reset) through the normal Koha UI first.
-    my $patron = Koha::Patrons->find( { userid => $userid } )
-        || Koha::Patrons->find( { cardnumber => $userid } );
-
-    if ( $patron && $patron->account_locked ) {
+    # C4::Auth::checkpw() is what the rest of Koha logs in through: it covers
+    # LDAP (with internal fallback), the account_locked / login_attempts
+    # lockout (FailedLoginAttempts), the AnonymousPatron block and the
+    # AuthSuccessLog / AuthFailureLog action logs. It accepts either a userid
+    # or a cardnumber. Return values:
+    #   (1, $cardnumber, $userid, $patron)  password ok
+    #   (-2, $patron)                       password ok, but expired - left to
+    #                                       the per-client password_expired
+    #                                       check (login_blocked_reason)
+    #   (-3, $patron)                       AnonymousPatron (24.05+) - rejected
+    #   (0, ...) or ()                      wrong password or account locked
+    my @auth = checkpw( $userid, $password, undef, 'opac', 1 );
+    my $patron;
+    if ( @auth && $auth[0] == 1 ) {
+        $patron = $auth[3];
+    } elsif ( @auth && $auth[0] == -2 ) {
+        $patron = $auth[1];
+    }
+    unless ($patron) {
         return _render_login( $c, $plugin, { %$authz_ctx, error => 'invalid_credentials' } );
     }
-
-    # checkpw_internal accepts either a userid or a cardnumber and returns
-    # (1, $cardnumber, $userid, $patron) on success, or 0 on failure.
-    my ( $ok, undef, undef, $checked_patron ) = checkpw_internal( $userid, $password, 1 );
-    unless ( $ok && $checked_patron ) {
-        $patron->update( { login_attempts => ( $patron->login_attempts || 0 ) + 1 } ) if $patron;
-        return _render_login( $c, $plugin, { %$authz_ctx, error => 'invalid_credentials' } );
-    }
-    $patron = $checked_patron;
-    $patron->update( { login_attempts => 0 } ) if $patron->login_attempts;
 
     # Per-client patron-category allow-list/deny-list, checked only now that
     # we actually know who logged in - redirect_uri is already trusted at
@@ -171,7 +164,7 @@ sub _handle_login {
         return _redirect_with_error( $c, $redirect_uri, 'access_denied', $authz_ctx->{state} );
     }
 
-    # checkpw_internal() only verifies the password - it knows nothing about
+    # checkpw() only verifies the password - it knows nothing about
     # Koha's own two-factor authentication (that lives entirely inside
     # C4::Auth::checkauth()'s session-based flow, which this plugin never
     # goes through, on purpose - see create_login_ticket's doc). A patron who
@@ -191,15 +184,16 @@ sub _handle_login {
 
 # True if this patron must pass a one-time-code challenge before this plugin
 # considers them authenticated: Koha's 2FA system preference is not
-# 'disabled', and the patron has actually completed 2FA enrollment (has a
-# secret on file). Deliberately does NOT replicate the 'enforced' mode's
+# 'disabled', and the patron has actually completed 2FA enrollment
+# (auth_method 'two-factor', set together with the secret on enrollment and
+# reset by reset_2fa - the same check C4::Auth uses). Deliberately does NOT replicate the 'enforced' mode's
 # behaviour of *requiring* not-yet-enrolled patrons to set up 2FA there and
 # then - that needs a QR-code enrollment UI this plugin doesn't have, and is
 # out of scope for "accounts where 2FA is already enabled".
 sub _patron_requires_2fa {
     my ($patron) = @_;
     return 0 if C4::Context->preference('TwoFactorAuthentication') eq 'disabled';
-    return $patron->secret ? 1 : 0;
+    return ( $patron->auth_method // '' ) eq 'two-factor' ? 1 : 0;
 }
 
 sub _handle_otp {
@@ -364,7 +358,7 @@ sub token {
                   ? "client_id '$client_id' received but no client_secret at all (Authorization header present: "
                     . ( $auth_header_present ? 'yes' : 'no' ) . ')'
             :                                                     "client_secret did not match for '$client_id' (received: "
-                    . _mask_secret_preview($client_secret) . ", via "
+                    . "secret of length " . length($client_secret) . ", via "
                     . ( $auth_header_present ? 'Authorization header' : 'form field' )
                     . ", stored hash uses " . _bcrypt_prefix( $client->{client_secret_hash} ) . ')';
         $c->app->log->warn("OAuthProvider /token: invalid_client - $reason");
@@ -379,17 +373,6 @@ sub token {
     }
 
     return $c->render( json => { error => 'unsupported_grant_type' }, status => 400 );
-}
-
-# Diagnostic-only, temporary: shows just enough of a rejected secret to
-# compare it against the known-correct value by eye (first/last 4 chars,
-# total length) without logging anything close to the full secret.
-sub _mask_secret_preview {
-    my ($secret) = @_;
-    my $len = length($secret);
-    return "<empty>" unless $len;
-    return "'$secret' (length $len)" if $len <= 8;
-    return "'" . substr( $secret, 0, 4 ) . ('*' x ( $len - 8 )) . substr( $secret, -4 ) . "' (length $len)";
 }
 
 # Diagnostic-only, temporary: the bcrypt algorithm id + cost factor prefix

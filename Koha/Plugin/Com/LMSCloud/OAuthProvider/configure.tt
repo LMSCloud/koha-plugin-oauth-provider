@@ -68,7 +68,7 @@
         [% END %]
       </tbody>
     </table>
-    <button type="button" class="btn btn-default btn-sm claims-add-btn" data-toggle="modal" data-target="#oauthprovider-claim-modal">[% T.cfg_claim_add | $raw %]</button>
+    <button type="button" class="btn btn-default btn-sm claims-add-btn" data-toggle="modal" data-bs-toggle="modal" data-target="#oauthprovider-claim-modal" data-bs-target="#oauthprovider-claim-modal">[% T.cfg_claim_add | $raw %]</button>
     <div class="claims-duplicate-error dialog alert" style="display:none;margin-top:.5em">[% T.cfg_claim_duplicate_error | $raw %]</div>
   </div>
 
@@ -94,8 +94,8 @@
     <div class="modal-dialog" role="document">
       <div class="modal-content">
         <div class="modal-header">
-          <button type="button" class="closebtn" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">&times;</span></button>
           <h4 class="modal-title">[% T.cfg_claim_modal_title | $raw %]</h4>
+          <button type="button" class="btn-close" data-dismiss="modal" data-bs-dismiss="modal" aria-label="Close"></button>
         </div>
         <div class="modal-body">
           <fieldset class="rows">
@@ -130,7 +130,7 @@
           <div class="oauthprovider-modal-error dialog alert" style="display:none"></div>
         </div>
         <div class="modal-footer">
-          <button type="button" class="btn btn-default" data-dismiss="modal">[% T.cfg_cancel | $raw %]</button>
+          <button type="button" class="btn btn-default" data-dismiss="modal" data-bs-dismiss="modal">[% T.cfg_cancel | $raw %]</button>
           <button type="button" class="btn btn-primary" id="oauthprovider-modal-confirm">[% T.cfg_claim_add | $raw %]</button>
         </div>
       </div>
@@ -221,6 +221,7 @@
 
       <h2>[% T.cfg_settings_heading | $raw %]</h2>
       <form method="post">
+        [% TRY %][% PROCESS 'csrf-token.inc' %][% CATCH %][% END %]
         <input type="hidden" name="class" value="[% plugin_class | html %]">
         <input type="hidden" name="method" value="configure">
         <input type="hidden" name="action" value="save_settings">
@@ -271,7 +272,7 @@
               <td>[% T.$label_key | $raw %]</td>
               <td>[% IF tpl.is_custom %][% T.cfg_template_status_custom | $raw %][% ELSE %]<em>[% T.cfg_template_status_default | $raw %]</em>[% END %]</td>
               <td>
-                <a href="#" class="btn btn-default btn-xs" data-toggle="modal" data-target="#oauthprovider-template-modal-[% tpl.name | html %]">
+                <a href="#" class="btn btn-default btn-xs" data-toggle="modal" data-bs-toggle="modal" data-target="#oauthprovider-template-modal-[% tpl.name | html %]" data-bs-target="#oauthprovider-template-modal-[% tpl.name | html %]">
                   [% T.cfg_template_edit | $raw %]
                 </a>
               </td>
@@ -287,10 +288,11 @@
           <div class="modal-dialog modal-lg" role="document">
             <div class="modal-content">
               <div class="modal-header">
-                <button type="button" class="closebtn" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">&times;</span></button>
                 <h4 class="modal-title">[% T.$label_key | $raw %]</h4>
+                <button type="button" class="btn-close" data-dismiss="modal" data-bs-dismiss="modal" aria-label="Close"></button>
               </div>
               <form method="post">
+                [% TRY %][% PROCESS 'csrf-token.inc' %][% CATCH %][% END %]
                 <input type="hidden" name="class" value="[% plugin_class | html %]">
                 <input type="hidden" name="method" value="configure">
                 <input type="hidden" name="action" value="save_custom_template">
@@ -306,12 +308,13 @@
                       [% T.cfg_template_reset | $raw %]
                     </button>
                   [% END %]
-                  <button type="button" class="btn btn-default" data-dismiss="modal">[% T.cfg_cancel | $raw %]</button>
+                  <button type="button" class="btn btn-default" data-dismiss="modal" data-bs-dismiss="modal">[% T.cfg_cancel | $raw %]</button>
                   <button type="submit" class="btn btn-primary">[% T.common_save | $raw %]</button>
                 </div>
               </form>
               [% IF tpl.is_custom %]
                 <form method="post" id="oauthprovider-template-reset-[% tpl.name | html %]" style="display:none">
+                  [% TRY %][% PROCESS 'csrf-token.inc' %][% CATCH %][% END %]
                   <input type="hidden" name="class" value="[% plugin_class | html %]">
                   <input type="hidden" name="method" value="configure">
                   <input type="hidden" name="action" value="reset_custom_template">
@@ -391,6 +394,7 @@
                     [% T.cfg_edit | $raw %]
                   </a>
                   <form method="post" style="display:inline" onsubmit="return confirm('[% T.cfg_confirm_regenerate | html %]');">
+                    [% TRY %][% PROCESS 'csrf-token.inc' %][% CATCH %][% END %]
                     <input type="hidden" name="class" value="[% plugin_class | html %]">
                     <input type="hidden" name="method" value="configure">
                     <input type="hidden" name="action" value="regenerate_secret">
@@ -398,6 +402,7 @@
                     <button type="submit" class="btn btn-default btn-xs">[% T.cfg_regenerate | $raw %]</button>
                   </form>
                   <form method="post" style="display:inline" onsubmit="return confirm('[% T.cfg_confirm_delete | html %]');">
+                    [% TRY %][% PROCESS 'csrf-token.inc' %][% CATCH %][% END %]
                     <input type="hidden" name="class" value="[% plugin_class | html %]">
                     <input type="hidden" name="method" value="configure">
                     <input type="hidden" name="action" value="delete">
@@ -414,6 +419,7 @@
       [% IF edit_client %]
         <h2>[% T.cfg_edit_heading_pre | $raw %][% edit_client.client_name | html %]</h2>
         <form method="post">
+          [% TRY %][% PROCESS 'csrf-token.inc' %][% CATCH %][% END %]
           <input type="hidden" name="class" value="[% plugin_class | html %]">
           <input type="hidden" name="method" value="configure">
           <input type="hidden" name="action" value="update">
@@ -509,6 +515,7 @@
       [% ELSE %]
         <h2>[% T.cfg_add_heading | $raw %]</h2>
         <form method="post">
+          [% TRY %][% PROCESS 'csrf-token.inc' %][% CATCH %][% END %]
           <input type="hidden" name="class" value="[% plugin_class | html %]">
           <input type="hidden" name="method" value="configure">
           <input type="hidden" name="action" value="create">
@@ -596,6 +603,22 @@
     </div>
   </div>
 </div>
+
+<script>
+    $(document).ready(function () {
+        // Bootstrap 5 (Koha 24.11+) styles .btn-close as the modal's close
+        // icon; older Koha versions (Bootstrap 3/4) don't know that class, so
+        // turn it back into Koha's classic close button there.
+        var bsVersion = ( $.fn.modal && $.fn.modal.Constructor && $.fn.modal.Constructor.VERSION ) || '';
+        if ( parseInt( bsVersion, 10 ) < 5 ) {
+            $('.modal-header .btn-close').each(function () {
+                $(this).removeClass('btn-close').addClass('closebtn')
+                    .html('<span aria-hidden="true">&times;</span>')
+                    .prependTo( $(this).closest('.modal-header') );
+            });
+        }
+    });
+</script>
 
 <script>
     $(document).ready(function () {
