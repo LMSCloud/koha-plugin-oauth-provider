@@ -8,6 +8,7 @@
         cfg_heading                          = "OAuth2 Identity Provider &ndash; Configuration",
         cfg_intro                            = "Here you manage the applications (\"clients\") that may authenticate against library accounts via OAuth2/OIDC. Each application gets its own client ID and secret, plus its own list of user data (\"claims\") released via <code>/userinfo</code> after a successful login. <code>userid</code> is always released.",
         cfg_settings_heading                 = "General settings",
+        cfg_toc_heading                      = "Contents",
         cfg_issuer_label                     = "Public base URL of this plugin:",
         cfg_issuer_hint_pre                  = "Used as the OIDC issuer (<code>iss</code>) and to build every endpoint URL in the discovery document (",
         cfg_issuer_hint_post                 = "). Required as soon as clients are meant to use the <code>openid</code> scope. For a real OIDC discovery document at <code>/.well-known/openid-configuration</code> on the domain root, a webserver rewrite is additionally required &ndash; see the README section \"Full OpenID Connect\".",

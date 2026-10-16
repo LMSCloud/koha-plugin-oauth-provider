@@ -10,6 +10,13 @@
 <title>[% T.cfg_title | $raw %]</title>
 [% Asset.css("lib/codemirror/codemirror.css") | $raw %]
 <style>
+    #col-content .page-section > h2:first-child {
+        margin-top: 0;
+    }
+    .oauthprovider-toc ol {
+        margin: .5em 0 0;
+        padding-left: 1.5em;
+    }
     .CodeMirror {
         resize: vertical;
         z-index: 0;
@@ -219,6 +226,18 @@
 
       <p>[% T.cfg_intro | $raw %]</p>
 
+      <nav class="page-section oauthprovider-toc" aria-label="[% T.cfg_toc_heading | html %]">
+        <strong>[% T.cfg_toc_heading | $raw %]</strong>
+        <ol>
+          <li><a href="#oauthprovider-settings">[% T.cfg_settings_heading | $raw %]</a></li>
+          [% IF oidc_config %]<li><a href="#oauthprovider-oidc">[% T.cfg_oidc_heading | $raw %]</a></li>[% END %]
+          <li><a href="#oauthprovider-apps">[% T.cfg_apps_heading | $raw %]</a></li>
+          <li><a href="#oauthprovider-app-form">[% IF edit_client %][% T.cfg_edit_heading_pre | $raw %][% edit_client.client_name | html %][% ELSE %][% T.cfg_add_heading | $raw %][% END %]</a></li>
+          <li><a href="#oauthprovider-templates">[% T.cfg_templates_heading | $raw %]</a></li>
+        </ol>
+      </nav>
+
+      <div class="page-section" id="oauthprovider-settings">
       <h2>[% T.cfg_settings_heading | $raw %]</h2>
       <form method="post">
         [% TRY %][% PROCESS 'csrf-token.inc' %][% CATCH %][% END %]
@@ -254,8 +273,10 @@
           <input type="submit" value="[% T.common_save | $raw %]" class="btn btn-primary">
         </fieldset>
       </form>
+      </div>
 
       [% IF oidc_config %]
+      <div class="page-section" id="oauthprovider-oidc">
         <h2>[% T.cfg_oidc_heading | $raw %]</h2>
         <p class="hint">[% T.cfg_oidc_hint | $raw %]</p>
         <table class="table oauthprovider-oidc-config">
@@ -274,79 +295,10 @@
             <tr><th>[% T.cfg_oidc_pkce | $raw %]</th><td><code>[% oidc_config.code_challenge_methods_supported.join(', ') | html %]</code> [% T.cfg_oidc_pkce_hint | $raw %]</td></tr>
           </tbody>
         </table>
+      </div>
       [% END %]
 
-      <h2>[% T.cfg_templates_heading | $raw %]</h2>
-      <p class="hint">[% T.cfg_templates_hint | $raw %]</p>
-      <table class="table">
-        <thead>
-          <tr>
-            <th>[% T.cfg_templates_th_page | $raw %]</th>
-            <th>[% T.cfg_templates_th_status | $raw %]</th>
-            <th>[% T.cfg_templates_th_actions | $raw %]</th>
-          </tr>
-        </thead>
-        <tbody>
-          [% FOREACH tpl IN template_customization %]
-            [% SET label_key = 'cfg_template_label_' _ tpl.name %]
-            <tr>
-              <td>[% T.$label_key | $raw %]</td>
-              <td>[% IF tpl.is_custom %][% T.cfg_template_status_custom | $raw %][% ELSE %]<em>[% T.cfg_template_status_default | $raw %]</em>[% END %]</td>
-              <td>
-                <a href="#" class="btn btn-default btn-xs" data-toggle="modal" data-bs-toggle="modal" data-target="#oauthprovider-template-modal-[% tpl.name | html %]" data-bs-target="#oauthprovider-template-modal-[% tpl.name | html %]">
-                  [% T.cfg_template_edit | $raw %]
-                </a>
-              </td>
-            </tr>
-          [% END %]
-        </tbody>
-      </table>
-
-      [% FOREACH tpl IN template_customization %]
-        [% SET label_key = 'cfg_template_label_' _ tpl.name %]
-        [% SET hint_key  = 'cfg_template_hint_' _ tpl.name %]
-        <div class="modal" id="oauthprovider-template-modal-[% tpl.name | html %]" tabindex="-1" role="dialog">
-          <div class="modal-dialog modal-lg" role="document">
-            <div class="modal-content">
-              <div class="modal-header">
-                <h4 class="modal-title">[% T.$label_key | $raw %]</h4>
-                <button type="button" class="btn-close" data-dismiss="modal" data-bs-dismiss="modal" aria-label="Close"></button>
-              </div>
-              <form method="post">
-                [% TRY %][% PROCESS 'csrf-token.inc' %][% CATCH %][% END %]
-                <input type="hidden" name="class" value="[% plugin_class | html %]">
-                <input type="hidden" name="method" value="configure">
-                <input type="hidden" name="action" value="save_custom_template">
-                <input type="hidden" name="template_name" value="[% tpl.name | html %]">
-                <div class="modal-body">
-                  <div class="hint">[% T.$hint_key | $raw %]</div>
-                  <textarea name="template_html" rows="28" style="width:100%;box-sizing:border-box;font-family:monospace;font-size:0.85em;">[% tpl.source | html %]</textarea>
-                </div>
-                <div class="modal-footer">
-                  [% IF tpl.is_custom %]
-                    <button type="submit" form="oauthprovider-template-reset-[% tpl.name | html %]" class="btn btn-default"
-                            onclick="return confirm('[% T.cfg_template_confirm_reset | html %]');">
-                      [% T.cfg_template_reset | $raw %]
-                    </button>
-                  [% END %]
-                  <button type="button" class="btn btn-default" data-dismiss="modal" data-bs-dismiss="modal">[% T.cfg_cancel | $raw %]</button>
-                  <button type="submit" class="btn btn-primary">[% T.common_save | $raw %]</button>
-                </div>
-              </form>
-              [% IF tpl.is_custom %]
-                <form method="post" id="oauthprovider-template-reset-[% tpl.name | html %]" style="display:none">
-                  [% TRY %][% PROCESS 'csrf-token.inc' %][% CATCH %][% END %]
-                  <input type="hidden" name="class" value="[% plugin_class | html %]">
-                  <input type="hidden" name="method" value="configure">
-                  <input type="hidden" name="action" value="reset_custom_template">
-                  <input type="hidden" name="template_name" value="[% tpl.name | html %]">
-                </form>
-              [% END %]
-            </div>
-          </div>
-        </div>
-      [% END %]
-
+      <div class="page-section" id="oauthprovider-apps">
       <h2>[% T.cfg_apps_heading | $raw %]</h2>
 
       [% IF new_secret %]
@@ -436,7 +388,9 @@
           </tbody>
         </table>
       [% END %]
+      </div>
 
+      <div class="page-section" id="oauthprovider-app-form">
       [% IF edit_client %]
         <h2>[% T.cfg_edit_heading_pre | $raw %][% edit_client.client_name | html %]</h2>
         <form method="post">
@@ -620,6 +574,80 @@
           </fieldset>
         </form>
       [% END %]
+      </div>
+
+      <div class="page-section" id="oauthprovider-templates">
+      <h2>[% T.cfg_templates_heading | $raw %]</h2>
+      <p class="hint">[% T.cfg_templates_hint | $raw %]</p>
+      <table class="table">
+        <thead>
+          <tr>
+            <th>[% T.cfg_templates_th_page | $raw %]</th>
+            <th>[% T.cfg_templates_th_status | $raw %]</th>
+            <th>[% T.cfg_templates_th_actions | $raw %]</th>
+          </tr>
+        </thead>
+        <tbody>
+          [% FOREACH tpl IN template_customization %]
+            [% SET label_key = 'cfg_template_label_' _ tpl.name %]
+            <tr>
+              <td>[% T.$label_key | $raw %]</td>
+              <td>[% IF tpl.is_custom %][% T.cfg_template_status_custom | $raw %][% ELSE %]<em>[% T.cfg_template_status_default | $raw %]</em>[% END %]</td>
+              <td>
+                <a href="#" class="btn btn-default btn-xs" data-toggle="modal" data-bs-toggle="modal" data-target="#oauthprovider-template-modal-[% tpl.name | html %]" data-bs-target="#oauthprovider-template-modal-[% tpl.name | html %]">
+                  [% T.cfg_template_edit | $raw %]
+                </a>
+              </td>
+            </tr>
+          [% END %]
+        </tbody>
+      </table>
+
+      [% FOREACH tpl IN template_customization %]
+        [% SET label_key = 'cfg_template_label_' _ tpl.name %]
+        [% SET hint_key  = 'cfg_template_hint_' _ tpl.name %]
+        <div class="modal" id="oauthprovider-template-modal-[% tpl.name | html %]" tabindex="-1" role="dialog">
+          <div class="modal-dialog modal-lg" role="document">
+            <div class="modal-content">
+              <div class="modal-header">
+                <h4 class="modal-title">[% T.$label_key | $raw %]</h4>
+                <button type="button" class="btn-close" data-dismiss="modal" data-bs-dismiss="modal" aria-label="Close"></button>
+              </div>
+              <form method="post">
+                [% TRY %][% PROCESS 'csrf-token.inc' %][% CATCH %][% END %]
+                <input type="hidden" name="class" value="[% plugin_class | html %]">
+                <input type="hidden" name="method" value="configure">
+                <input type="hidden" name="action" value="save_custom_template">
+                <input type="hidden" name="template_name" value="[% tpl.name | html %]">
+                <div class="modal-body">
+                  <div class="hint">[% T.$hint_key | $raw %]</div>
+                  <textarea name="template_html" rows="28" style="width:100%;box-sizing:border-box;font-family:monospace;font-size:0.85em;">[% tpl.source | html %]</textarea>
+                </div>
+                <div class="modal-footer">
+                  [% IF tpl.is_custom %]
+                    <button type="submit" form="oauthprovider-template-reset-[% tpl.name | html %]" class="btn btn-default"
+                            onclick="return confirm('[% T.cfg_template_confirm_reset | html %]');">
+                      [% T.cfg_template_reset | $raw %]
+                    </button>
+                  [% END %]
+                  <button type="button" class="btn btn-default" data-dismiss="modal" data-bs-dismiss="modal">[% T.cfg_cancel | $raw %]</button>
+                  <button type="submit" class="btn btn-primary">[% T.common_save | $raw %]</button>
+                </div>
+              </form>
+              [% IF tpl.is_custom %]
+                <form method="post" id="oauthprovider-template-reset-[% tpl.name | html %]" style="display:none">
+                  [% TRY %][% PROCESS 'csrf-token.inc' %][% CATCH %][% END %]
+                  <input type="hidden" name="class" value="[% plugin_class | html %]">
+                  <input type="hidden" name="method" value="configure">
+                  <input type="hidden" name="action" value="reset_custom_template">
+                  <input type="hidden" name="template_name" value="[% tpl.name | html %]">
+                </form>
+              [% END %]
+            </div>
+          </div>
+        </div>
+      [% END %]
+      </div>
 
     </div>
   </div>

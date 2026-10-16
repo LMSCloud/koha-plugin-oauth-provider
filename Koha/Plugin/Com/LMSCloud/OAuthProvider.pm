@@ -54,7 +54,7 @@ sub _random_token {
     return Koha::Token->new->generate( { pattern => sprintf( $SAFE_TOKEN_PATTERN, $length ) } );
 }
 
-our $VERSION = '1.6.4';
+our $VERSION = '1.6.5';
 
 our $metadata = {
     name            => 'OAuth2 / OpenID Connect Identity Provider',
