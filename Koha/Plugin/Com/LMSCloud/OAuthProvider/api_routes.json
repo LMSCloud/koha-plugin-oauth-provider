@@ -26,7 +26,10 @@
                 { "name": "claims", "in": "query", "required": false, "type": "string" },
                 { "name": "request", "in": "query", "required": false, "type": "string" },
                 { "name": "request_uri", "in": "query", "required": false, "type": "string" },
-                { "name": "registration", "in": "query", "required": false, "type": "string" }
+                { "name": "registration", "in": "query", "required": false, "type": "string" },
+                { "name": "access_type", "in": "query", "required": false, "type": "string" },
+                { "name": "include_granted_scopes", "in": "query", "required": false, "type": "string" },
+                { "name": "approval_prompt", "in": "query", "required": false, "type": "string" }
             ],
             "responses": {
                 "200": { "description": "Login form" },
