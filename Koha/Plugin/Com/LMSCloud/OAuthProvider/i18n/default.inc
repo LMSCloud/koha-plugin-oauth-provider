@@ -2,6 +2,7 @@
     Pattern follows https://koha-community.gitlab.io/KohaAdvent/2020-12-08-translate-plugin/ %]
 [%
     T = {
+        html_dir                             = "ltr",
         common_save                          = "Save",
 
         cfg_title                            = "OAuth2 Identity Provider: Configuration",

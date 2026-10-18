@@ -1,10 +1,15 @@
+[%# Always load the English defaults first, then overlay the active language's
+    strings on top: a key missing from (or a whole missing) <LANG>.inc then simply
+    stays English instead of rendering empty. %]
+[% PROCESS "$PLUGIN_DIR/i18n/default.inc" %]
 [% TRY %]
+    [% T_base = T %]
     [% PROCESS "$PLUGIN_DIR/i18n/${LANG}.inc" %]
-[% CATCH %]
-    [% PROCESS "$PLUGIN_DIR/i18n/default.inc" %]
-[% END %]
+    [% CALL T_base.import(T) %]
+    [% T = T_base %]
+[% CATCH %][% lang_file_missing = 1 %][%# NB: the CATCH body must not be empty - TT then installs no handler at all %][% END %]
 <!DOCTYPE html>
-<html lang="[% LANG | html %]">
+<html lang="[% LANG | html %]" dir="[% T.html_dir | html %]">
 <head>
 <meta charset="utf-8">
 <title>[% T.otp_title %]</title>
@@ -34,7 +39,7 @@
         <input type="hidden" name="ticket" value="[% ticket | html %]">
 
         <label for="otp_token">[% T.otp_code_label %]</label>
-        <input type="text" id="otp_token" name="otp_token" inputmode="numeric" pattern="[0-9]*"
+        <input type="text" id="otp_token" name="otp_token" dir="ltr" inputmode="numeric" pattern="[0-9]*"
                autocomplete="one-time-code" required autofocus>
 
         <button type="submit">[% T.otp_submit %]</button>

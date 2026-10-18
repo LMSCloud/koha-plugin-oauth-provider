@@ -1,11 +1,11 @@
 [%# German strings for koha-plugin-oauth-provider.
     Pattern follows https://koha-community.gitlab.io/KohaAdvent/2020-12-08-translate-plugin/
-    Keys MUST stay in sync with default.inc - anything missing here silently
-    falls back to English (Template Toolkit just returns an empty string for
-    an unknown hash key, not an error, so a typo here fails silently rather
-    than loudly - keep the two files side by side when editing). %]
+    Keys should stay in sync with default.inc - a key missing here falls back to
+    the English text from default.inc (see the preamble of the templates), so a
+    typo in a key name fails silently as English text rather than loudly. %]
 [%
     T = {
+        html_dir                             = "ltr",
         common_save                          = "Speichern",
 
         cfg_title                            = "OAuth2 Identity Provider: Konfiguration",

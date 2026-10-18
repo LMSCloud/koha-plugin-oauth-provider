@@ -423,59 +423,108 @@ to its editor, but doesn't validate it, so a custom template missing one of thes
 the login flow for every client, silently, until an admin notices and either fixes it or
 resets to default.
 
-## 10. Bilingual UI (English/German)
+## 10. Multilingual UI (English + 14 languages)
 
-`configure.tt`, `tool.tt`, `login.tt`, `consent.tt` and `error.tt` render in English or
-German depending on Koha's configured interface language, with the strings being
-switched. This is deliberately not real gettext: `Koha::I18N` (Koha's own runtime
-translation layer) is bound to a single, fixed textdomain (`"Koha"`, pointing at Koha's
-own core `.po` catalog) - a plugin's own strings are never part of that catalog, so
-`[% USE I18N %]`/`t()` would just echo the source string back untranslated. Instead, this
-plugin follows the lighter approach from
+`configure.tt`, `tool.tt`, `login.tt`, `otp.tt`, `consent.tt` and `error.tt` render in the
+language Koha is configured for, with the strings being switched. This is deliberately not
+real gettext: `Koha::I18N` (Koha's own runtime translation layer) is bound to a single,
+fixed textdomain (`"Koha"`, pointing at Koha's own core `.po` catalog) - a plugin's own
+strings are never part of that catalog, so `[% USE I18N %]`/`t()` would just echo the
+source string back untranslated. Instead, this plugin follows the lighter approach from
 [Translating your plugin - KohaAdvent 2020-12-08](https://koha-community.gitlab.io/KohaAdvent/2020-12-08-translate-plugin/):
 a plain per-plugin `T` string hash, selected at render time via the interface's `LANG`.
+
+| Language   | File          | Notes |
+|------------|---------------|-------|
+| English    | `default.inc` | base language, always loaded first (fallback) |
+| German     | `de-DE.inc`   | |
+| French     | `fr-FR.inc`   | |
+| Italian    | `it-IT.inc`   | |
+| Spanish    | `es-ES.inc`   | |
+| Polish     | `pl-PL.inc`   | |
+| Turkish    | `tr-TR.inc`   | |
+| Ukrainian  | `uk-UA.inc`   | |
+| Dutch      | `nl-NL.inc`   | |
+| Greek      | `el-GR.inc`   | |
+| Finnish    | `fi-FI.inc`   | |
+| Swedish    | `sv-SE.inc`   | |
+| Portuguese | `pt-PT.inc`   | European Portuguese; copy to `pt-BR.inc` and adapt if you need Brazilian Portuguese |
+| Bulgarian  | `bg-Cyrl.inc` | Koha's code for Bulgarian is assumed to be `bg-Cyrl` |
+| Arabic     | `ar-Arab.inc` | right-to-left (`html_dir = "rtl"`); Koha's code for Arabic is `ar-Arab` |
+
+The French, Italian, Spanish, Polish, Turkish, Ukrainian, Dutch, Greek, Finnish, Swedish,
+Portuguese, Bulgarian and Arabic files are
+**machine-assisted translations that have not been reviewed by a native speaker yet**
+(each file says so in its header comment). The pages patrons see - `login.tt`, `otp.tt`,
+`consent.tt`, `error.tt` and the claim labels listed on the consent page - deserve a
+proper review before production use, in particular the wording of the consent text. The
+staff-facing strings (`cfg_*`, `tool_*`) matter less, since staff mostly work in German
+or English.
 
 ```
 Koha/Plugin/Com/LMSCloud/OAuthProvider/i18n/
 ├── default.inc   # English (base/fallback)
-└── de-DE.inc      # German
+├── de-DE.inc     # German
+├── fr-FR.inc  it-IT.inc  es-ES.inc  pl-PL.inc  tr-TR.inc  uk-UA.inc  nl-NL.inc  el-GR.inc
+├── fi-FI.inc  sv-SE.inc  pt-PT.inc  bg-Cyrl.inc
+└── ar-Arab.inc   # Arabic (right-to-left)
 ```
 
 Every template starts with:
 ```
+[% PROCESS "$PLUGIN_DIR/i18n/default.inc" %]
 [% TRY %]
+    [% T_base = T %]
     [% PROCESS "$PLUGIN_DIR/i18n/${LANG}.inc" %]
-[% CATCH %]
-    [% PROCESS "$PLUGIN_DIR/i18n/default.inc" %]
-[% END %]
+    [% CALL T_base.import(T) %]
+    [% T = T_base %]
+[% CATCH %][% lang_file_missing = 1 %][% END %]
 ```
-and then references strings as `[% T.some_key %]` (a missing key silently renders as
-empty - no error - so keep `default.inc`/`de-DE.inc` in sync by hand when adding a key).
-Claim labels are looked up by a computed key (`claim_label_<claim key>`) via
-`[% SET label_key = 'claim_label_' _ key %][% T.$label_key %]` - `T.${'claim_label_' _
-key}` does **not** parse in Template Toolkit (confirmed by testing against a real TT
-engine; string concatenation isn't allowed inside a `${...}` dot-access).
+i.e. the English defaults are always loaded first and the active language's file is laid
+**on top** (`hash.import()`). A key that is missing from a language file - or a language
+without any file, e.g. `fr-CA`, which has no regional fallback to `fr-FR` - therefore
+simply stays English instead of rendering empty. Templates then reference strings as
+`[% T.some_key | $raw %]` (translated strings deliberately contain markup/entities such as
+`&ndash;` or `<code>`, so they are output unescaped; actual data values use `| html`).
+Two Template Toolkit details worth knowing, both confirmed against a real TT engine:
+- The `CATCH` body must not be empty: a completely empty `[% CATCH %][% END %]` (even one
+  containing only a comment) installs **no handler at all**, so the "file not found"
+  error would propagate instead of being swallowed. That is why the block assigns a
+  dummy variable.
+- Claim labels are looked up by a computed key (`claim_label_<claim key>`) via
+  `[% SET label_key = 'claim_label_' _ key %][% T.$label_key %]` - `T.${'claim_label_' _
+  key}` does **not** parse (string concatenation isn't allowed inside a `${...}`
+  dot-access).
 
 Language selection differs by page type:
 - `configure.tt`/`tool.tt` run through `get_template()`
   (`C4::Auth::get_template_and_user`), which already injects `LANG` (the logged-in staff
   user's interface language, via `C4::Languages::getlanguage`) and `PLUGIN_DIR` for free
   (`Koha::Plugins::Base`) - no extra plugin code needed.
-- `login.tt`/`consent.tt`/`error.tt` are unauthenticated and have no CGI/session object to
-  hand to `getlanguage()`. `OAuthProvider::detect_public_language()` replicates just the
-  safe, per-request-scoped parts of that logic directly against the Mojolicious request:
-  `KohaOpacLanguage` cookie, then the `Accept-Language` header (via Koha's own
+- `login.tt`/`otp.tt`/`consent.tt`/`error.tt` are unauthenticated and have no CGI/session
+  object to hand to `getlanguage()`. `OAuthProvider::detect_public_language()` replicates
+  just the safe, per-request-scoped parts of that logic directly against the Mojolicious
+  request: `KohaOpacLanguage` cookie, then the `Accept-Language` header (via Koha's own
   `C4::Languages::accept_language` content-negotiation helper), then the library's first
   configured `OPACLanguages` value, then `en`. Deliberately **not** calling
   `C4::Languages::getlanguage()` itself here: it caches its result under one global,
   session-unaware key, which would leak one anonymous visitor's detected language onto
   another's response under a persistent Mojolicious worker handling many concurrent
-  requests.
+  requests. Only languages enabled in the `OPACLanguages` system preference are ever
+  selected, so a language file has no effect until the library enables that language.
 
-To add a third language: add `<lang-code>.inc` (see `installer/data/mysql/localization/`
-in Koha core for valid codes, e.g. `fr-FR`) with the same keys as `default.inc`, and make
-sure that language is enabled in the `OPACLanguages`/`language` system preferences -
-nothing else needs to change.
+**Right-to-left:** the four public pages set `<html lang="..." dir="[% T.html_dir %]">`,
+and `html_dir` is `rtl` only in `ar-Arab.inc`. The one-time-code input keeps `dir="ltr"`
+because it only ever holds digits. A customized page (section 9) does not pick this up
+automatically - a stored override keeps whatever `<html>` tag and preamble it was copied
+with, and would need the same two changes to support RTL or the English-fallback overlay.
+
+To add another language: copy `default.inc` to `<lang-code>.inc`, translate the values
+(keep the keys, the HTML tags/entities and `\"` escapes, and do not use `$` inside
+values - it is interpolated by Template Toolkit), set `html_dir` (`ltr` or `rtl`), and make
+sure the language is enabled in `OPACLanguages` (patron pages) / `language` (staff pages).
+Use the exact code Koha uses for that language (e.g. `fr-FR`, `pl-PL`, `ar-Arab`); nothing
+else needs to change.
 
 ## 11. Full OpenID Connect
 
@@ -758,8 +807,10 @@ Koha/Plugin/Com/LMSCloud/
     │                                # "Customize pages" template-override modals (section 9)
     ├── tool.tt                      # Staff tool: manual cleanup, active tokens
     ├── i18n/
-    │   ├── default.inc              # English strings (base/fallback)
-    │   └── de-DE.inc                # German strings
+    │   ├── default.inc              # English strings (base, always loaded first)
+    │   ├── de-DE.inc  fr-FR.inc  it-IT.inc  es-ES.inc  pl-PL.inc  tr-TR.inc  uk-UA.inc
+    │   ├── nl-NL.inc  el-GR.inc  fi-FI.inc  sv-SE.inc  pt-PT.inc  bg-Cyrl.inc
+    │   └── ar-Arab.inc              # per-language strings (Arabic is right-to-left)
     └── templates/
         ├── login.tt                 # Standalone login page (public, no Koha chrome) -
         │                            # bundled default; overridable, see section 9

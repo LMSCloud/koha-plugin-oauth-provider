@@ -1,10 +1,15 @@
 [% USE raw %]
 [% USE Koha %]
+[%# Always load the English defaults first, then overlay the active language's
+    strings on top: a key missing from (or a whole missing) <LANG>.inc then simply
+    stays English instead of rendering empty. %]
+[% PROCESS "$PLUGIN_DIR/i18n/default.inc" %]
 [% TRY %]
+    [% T_base = T %]
     [% PROCESS "$PLUGIN_DIR/i18n/${LANG}.inc" %]
-[% CATCH %]
-    [% PROCESS "$PLUGIN_DIR/i18n/default.inc" %]
-[% END %]
+    [% CALL T_base.import(T) %]
+    [% T = T_base %]
+[% CATCH %][% lang_file_missing = 1 %][%# NB: the CATCH body must not be empty - TT then installs no handler at all %][% END %]
 [% INCLUDE 'doc-head-open.inc' %]
 <title>[% T.tool_title | $raw %]</title>
 [% INCLUDE 'doc-head-close.inc' %]

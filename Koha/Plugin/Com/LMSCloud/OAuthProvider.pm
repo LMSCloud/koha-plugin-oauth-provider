@@ -54,7 +54,7 @@ sub _random_token {
     return Koha::Token->new->generate( { pattern => sprintf( $SAFE_TOKEN_PATTERN, $length ) } );
 }
 
-our $VERSION = '1.6.5';
+our $VERSION = '1.7.0';
 
 our $metadata = {
     name            => 'OAuth2 / OpenID Connect Identity Provider',
@@ -64,7 +64,7 @@ our $metadata = {
                       . 'per-client-configurable user data via /userinfo (and, with '
                       . 'scope=openid, a signed id_token).',
     date_authored   => '2026-08-04',
-    date_updated    => '2026-10-16',
+    date_updated    => '2026-10-18',
     minimum_version => '22.11',
     maximum_version => undef,
     version         => $VERSION,
